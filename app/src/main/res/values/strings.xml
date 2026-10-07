@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">S23 Ultra Camera</string>
+    <string name="camera_ready">Camera ready</string>
+    <string name="flash_button">Flash Off</string>
+    <string name="timer_button">Timer Off</string>
+    <string name="grid_button">Grid Off</string>
+    <string name="zoom_label">1.0x</string>
+    <string name="switch_camera_button">Rear</string>
+    <string name="mode_photo">Photo</string>
+    <string name="mode_portrait">Portrait</string>
+    <string name="mode_night">Night</string>
+    <string name="latest_photo">Latest photo</string>
+    <string name="capture_photo">Capture photo</string>
+</resources>
