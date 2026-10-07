@@ -12,4 +12,9 @@
     <string name="mode_night">Night</string>
     <string name="latest_photo">Latest photo</string>
     <string name="capture_photo">Capture photo</string>
+    <string name="lens_06">0.6×</string>
+    <string name="lens_1">1×</string>
+    <string name="lens_3">3×</string>
+    <string name="lens_10">10×</string>
+    <string name="ev_reset">Reset</string>
 </resources>
