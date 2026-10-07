@@ -5,9 +5,11 @@ import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
+import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -31,6 +33,7 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.extensions.ExtensionMode
 import androidx.camera.extensions.ExtensionsManager
@@ -261,8 +264,36 @@ class MainActivity : AppCompatActivity() {
                 binding.previewView.display?.rotation
                     ?: Surface.ROTATION_0
 
-            val preview = Preview.Builder()
-                .setTargetRotation(rotation)
+            val previewBuilder =
+                Preview.Builder()
+                    .setTargetRotation(rotation)
+
+            Camera2Interop.Extender(previewBuilder)
+                .setSessionCaptureCallback(
+                    object : CameraCaptureSession.CaptureCallback() {
+                        override fun onCaptureCompleted(
+                            session: CameraCaptureSession,
+                            request: CaptureRequest,
+                            result: TotalCaptureResult
+                        ) {
+                            if (!manualEvActive) {
+                                result.get(
+                                    CaptureResult.SENSOR_EXPOSURE_TIME
+                                )?.let { exposure ->
+                                    lastAutoExposureNs = exposure
+                                }
+
+                                result.get(
+                                    CaptureResult.SENSOR_SENSITIVITY
+                                )?.let { iso ->
+                                    lastAutoIso = iso
+                                }
+                            }
+                        }
+                    }
+                )
+
+            val preview = previewBuilder
                 .build()
                 .also {
                     it.setSurfaceProvider(
@@ -533,20 +564,6 @@ class MainActivity : AppCompatActivity() {
             Log.w(TAG, "Manual sensor ranges unavailable", e)
             sensorExposureRange = null
             sensorIsoRange = null
-        }
-
-        camera2Control?.addCaptureResultListener(
-            ContextCompat.getMainExecutor(this)
-        ) { result ->
-            if (!manualEvActive) {
-                result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let {
-                    lastAutoExposureNs = it
-                }
-                result.get(CaptureResult.SENSOR_SENSITIVITY)?.let {
-                    lastAutoIso = it
-                }
-            }
-            false
         }
 
         val sliderRange =
