@@ -5,7 +5,9 @@ import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -28,6 +30,7 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.extensions.ExtensionMode
 import androidx.camera.extensions.ExtensionsManager
@@ -40,7 +43,9 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 class MainActivity : AppCompatActivity() {
 
@@ -71,6 +76,11 @@ class MainActivity : AppCompatActivity() {
     private var exposureStep = 0f
     private var currentExposureIndex = 0
     private var camera2Control: Camera2CameraControl? = null
+    private var sensorExposureRange: android.util.Range<Long>? = null
+    private var sensorIsoRange: android.util.Range<Int>? = null
+    private var lastAutoExposureNs: Long? = null
+    private var lastAutoIso: Int? = null
+    private var manualEvActive = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -488,11 +498,12 @@ class MainActivity : AppCompatActivity() {
 
         exposureLower = range.lower
         exposureUpper = range.upper
-        exposureStep =
-            state.exposureCompensationStep.toFloat()
+        exposureStep = state.exposureCompensationStep.toFloat()
 
-        currentExposureIndex =
-            state.exposureCompensationIndex
+        currentExposureIndex = 0
+        manualEvActive = false
+        lastAutoExposureNs = null
+        lastAutoIso = null
 
         camera2Control =
             if (!usingOemExtension) {
@@ -501,23 +512,47 @@ class MainActivity : AppCompatActivity() {
                         activeCamera.cameraControl
                     )
                 } catch (e: Exception) {
-                    Log.w(
-                        TAG,
-                        "Camera2 exposure control unavailable",
-                        e
-                    )
+                    Log.w(TAG, "Camera2 control unavailable", e)
                     null
                 }
             } else {
                 null
             }
 
+        try {
+            val info = Camera2CameraInfo.from(activeCamera.cameraInfo)
+            sensorExposureRange =
+                info.getCameraCharacteristic(
+                    CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE
+                )
+            sensorIsoRange =
+                info.getCameraCharacteristic(
+                    CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE
+                )
+        } catch (e: Exception) {
+            Log.w(TAG, "Manual sensor ranges unavailable", e)
+            sensorExposureRange = null
+            sensorIsoRange = null
+        }
+
+        camera2Control?.addCaptureResultListener(
+            ContextCompat.getMainExecutor(this)
+        ) { result ->
+            if (!manualEvActive) {
+                result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let {
+                    lastAutoExposureNs = it
+                }
+                result.get(CaptureResult.SENSOR_SENSITIVITY)?.let {
+                    lastAutoIso = it
+                }
+            }
+            false
+        }
+
         val sliderRange =
-            (exposureUpper - exposureLower)
-                .coerceAtLeast(0)
+            (exposureUpper - exposureLower).coerceAtLeast(0)
 
         binding.evSlider.max = sliderRange
-
         binding.evSlider.progress =
             (currentExposureIndex - exposureLower)
                 .coerceIn(0, sliderRange)
@@ -525,14 +560,14 @@ class MainActivity : AppCompatActivity() {
         val supported =
             exposureUpper > exposureLower &&
                 camera2Control != null &&
+                sensorExposureRange != null &&
+                sensorIsoRange != null &&
                 !usingOemExtension
 
         binding.evSlider.isEnabled = supported
         binding.evResetButton.isEnabled = supported
-        binding.evSlider.alpha =
-            if (supported) 1f else 0.35f
-        binding.evResetButton.alpha =
-            if (supported) 1f else 0.35f
+        binding.evSlider.alpha = if (supported) 1f else 0.35f
+        binding.evResetButton.alpha = if (supported) 1f else 0.35f
 
         if (usingOemExtension) {
             binding.evLabel.text = "EV locked"
@@ -540,20 +575,34 @@ class MainActivity : AppCompatActivity() {
             binding.evLabel.text = "EV unavailable"
         } else {
             updateExposureLabel()
-            applyExposureIndex(currentExposureIndex)
+            setAutoExposure()
         }
     }
 
     private fun updateExposureLabel() {
-        val ev =
-            currentExposureIndex * exposureStep
-
+        val ev = currentExposureIndex * exposureStep
         binding.evLabel.text =
-            String.format(
-                Locale.US,
-                "EV %+.1f",
-                ev
-            )
+            String.format(Locale.US, "EV %+.1f", ev)
+    }
+
+    private fun setAutoExposure() {
+        val control = camera2Control ?: return
+
+        manualEvActive = false
+
+        val options =
+            CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON
+                )
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                    0
+                )
+                .build()
+
+        control.setCaptureRequestOptions(options)
     }
 
     private fun applyExposureIndex(index: Int) {
@@ -567,35 +616,90 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        if (index == 0) {
+            setAutoExposure()
+            updateExposureLabel()
+            return
+        }
+
+        val baseTime = lastAutoExposureNs
+        val baseIso = lastAutoIso
+        val timeRange = sensorExposureRange
+        val isoRange = sensorIsoRange
+
+        if (
+            baseTime == null ||
+            baseIso == null ||
+            timeRange == null ||
+            isoRange == null
+        ) {
+            binding.evLabel.text = "EV preparing…"
+            mainHandler.postDelayed({
+                if (currentExposureIndex == index) {
+                    applyExposureIndex(index)
+                }
+            }, 250L)
+            return
+        }
+
+        val ev = index * exposureStep
+        val factor = 2.0.pow(ev.toDouble())
+
+        val desiredProduct =
+            baseTime.toDouble() *
+                baseIso.toDouble() *
+                factor
+
+        var targetTime =
+            (baseTime.toDouble() * factor)
+                .roundToLong()
+                .coerceIn(timeRange.lower, timeRange.upper)
+
+        var targetIso =
+            (desiredProduct / targetTime.toDouble())
+                .roundToInt()
+                .coerceIn(isoRange.lower, isoRange.upper)
+
+        if (targetIso == isoRange.upper && ev > 0f) {
+            targetTime =
+                (desiredProduct / targetIso.toDouble())
+                    .roundToLong()
+                    .coerceIn(timeRange.lower, timeRange.upper)
+        }
+
+        manualEvActive = true
+
         val options =
             CaptureRequestOptions.Builder()
                 .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
-                    index
+                    CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_OFF
+                )
+                .setCaptureRequestOption(
+                    CaptureRequest.SENSOR_EXPOSURE_TIME,
+                    targetTime
+                )
+                .setCaptureRequestOption(
+                    CaptureRequest.SENSOR_SENSITIVITY,
+                    targetIso
                 )
                 .build()
 
-        val future =
-            control.setCaptureRequestOptions(options)
+        val future = control.setCaptureRequestOptions(options)
 
         future.addListener({
             try {
                 future.get()
-
                 runOnUiThread {
                     if (currentExposureIndex == index) {
                         updateExposureLabel()
                     }
                 }
             } catch (e: Exception) {
-                Log.e(
-                    TAG,
-                    "Exposure compensation request failed",
-                    e
-                )
-
+                Log.e(TAG, "Manual EV request failed", e)
                 runOnUiThread {
                     binding.evLabel.text = "EV failed"
+                    manualEvActive = false
                 }
             }
         }, ContextCompat.getMainExecutor(this))
@@ -610,20 +714,14 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val zero =
-            0.coerceIn(
-                exposureLower,
-                exposureUpper
-            )
+        val zero = 0.coerceIn(exposureLower, exposureUpper)
 
         currentExposureIndex = zero
-
         binding.evSlider.progress =
-            (zero - exposureLower)
-                .coerceAtLeast(0)
+            (zero - exposureLower).coerceAtLeast(0)
 
+        setAutoExposure()
         updateExposureLabel()
-        applyExposureIndex(zero)
     }
 
     private fun focusAndMeterAt(
@@ -637,11 +735,18 @@ class MainActivity : AppCompatActivity() {
                 .meteringPointFactory
                 .createPoint(x, y)
 
+        val meteringFlags =
+            if (manualEvActive) {
+                FocusMeteringAction.FLAG_AF
+            } else {
+                FocusMeteringAction.FLAG_AF or
+                    FocusMeteringAction.FLAG_AE
+            }
+
         val action =
             FocusMeteringAction.Builder(
                 point,
-                FocusMeteringAction.FLAG_AF or
-                    FocusMeteringAction.FLAG_AE
+                meteringFlags
             )
                 .setAutoCancelDuration(
                     4,
