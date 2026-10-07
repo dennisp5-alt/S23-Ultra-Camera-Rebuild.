@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
+import android.hardware.camera2.CaptureRequest
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -26,6 +27,8 @@ import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.extensions.ExtensionMode
 import androidx.camera.extensions.ExtensionsManager
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -57,6 +60,7 @@ class MainActivity : AppCompatActivity() {
     private var gridEnabled = false
     private var currentMode = "Photo"
     private var activeModeBackend = "Photo"
+    private var usingOemExtension = false
 
     private var minZoomRatio = 1f
     private var maxZoomRatio = 1f
@@ -66,6 +70,7 @@ class MainActivity : AppCompatActivity() {
     private var exposureUpper = 0
     private var exposureStep = 0f
     private var currentExposureIndex = 0
+    private var camera2Control: Camera2CameraControl? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -164,9 +169,7 @@ class MainActivity : AppCompatActivity() {
 
                     currentExposureIndex = index
                     updateExposureLabel()
-
-                    camera?.cameraControl
-                        ?.setExposureCompensationIndex(index)
+                    applyExposureIndex(index)
                 }
 
                 override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
@@ -313,6 +316,7 @@ class MainActivity : AppCompatActivity() {
             }
 
         if (requestedExtension == null) {
+            usingOemExtension = false
             activeModeBackend = "Photo"
             return baseSelector
         }
@@ -326,6 +330,7 @@ class MainActivity : AppCompatActivity() {
                 requestedExtension
             )
         ) {
+            usingOemExtension = true
             activeModeBackend =
                 if (currentMode == "Portrait") {
                     "Portrait • OEM bokeh"
@@ -339,6 +344,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        usingOemExtension = false
         activeModeBackend =
             currentMode + " • standard"
 
@@ -476,12 +482,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun configureExposureControl() {
-        val state =
-            camera?.cameraInfo?.exposureState
-                ?: return
-
-        val range =
-            state.exposureCompensationRange
+        val activeCamera = camera ?: return
+        val state = activeCamera.cameraInfo.exposureState
+        val range = state.exposureCompensationRange
 
         exposureLower = range.lower
         exposureUpper = range.upper
@@ -490,6 +493,24 @@ class MainActivity : AppCompatActivity() {
 
         currentExposureIndex =
             state.exposureCompensationIndex
+
+        camera2Control =
+            if (!usingOemExtension) {
+                try {
+                    Camera2CameraControl.from(
+                        activeCamera.cameraControl
+                    )
+                } catch (e: Exception) {
+                    Log.w(
+                        TAG,
+                        "Camera2 exposure control unavailable",
+                        e
+                    )
+                    null
+                }
+            } else {
+                null
+            }
 
         val sliderRange =
             (exposureUpper - exposureLower)
@@ -502,12 +523,25 @@ class MainActivity : AppCompatActivity() {
                 .coerceIn(0, sliderRange)
 
         val supported =
-            exposureUpper > exposureLower
+            exposureUpper > exposureLower &&
+                camera2Control != null &&
+                !usingOemExtension
 
         binding.evSlider.isEnabled = supported
         binding.evResetButton.isEnabled = supported
+        binding.evSlider.alpha =
+            if (supported) 1f else 0.35f
+        binding.evResetButton.alpha =
+            if (supported) 1f else 0.35f
 
-        updateExposureLabel()
+        if (usingOemExtension) {
+            binding.evLabel.text = "EV locked"
+        } else if (!supported) {
+            binding.evLabel.text = "EV unavailable"
+        } else {
+            updateExposureLabel()
+            applyExposureIndex(currentExposureIndex)
+        }
     }
 
     private fun updateExposureLabel() {
@@ -522,8 +556,59 @@ class MainActivity : AppCompatActivity() {
             )
     }
 
+    private fun applyExposureIndex(index: Int) {
+        if (usingOemExtension) {
+            binding.evLabel.text = "EV locked"
+            return
+        }
+
+        val control = camera2Control ?: run {
+            binding.evLabel.text = "EV unavailable"
+            return
+        }
+
+        val options =
+            CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                    index
+                )
+                .build()
+
+        val future =
+            control.setCaptureRequestOptions(options)
+
+        future.addListener({
+            try {
+                future.get()
+
+                runOnUiThread {
+                    if (currentExposureIndex == index) {
+                        updateExposureLabel()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(
+                    TAG,
+                    "Exposure compensation request failed",
+                    e
+                )
+
+                runOnUiThread {
+                    binding.evLabel.text = "EV failed"
+                }
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
     private fun resetExposure() {
-        if (exposureUpper < exposureLower) return
+        if (
+            exposureUpper < exposureLower ||
+            camera2Control == null ||
+            usingOemExtension
+        ) {
+            return
+        }
 
         val zero =
             0.coerceIn(
@@ -538,9 +623,7 @@ class MainActivity : AppCompatActivity() {
                 .coerceAtLeast(0)
 
         updateExposureLabel()
-
-        camera?.cameraControl
-            ?.setExposureCompensationIndex(zero)
+        applyExposureIndex(zero)
     }
 
     private fun focusAndMeterAt(
@@ -578,23 +661,52 @@ class MainActivity : AppCompatActivity() {
     ) {
         binding.focusIndicator.animate().cancel()
 
+        val previewLocation = IntArray(2)
+        val rootLocation = IntArray(2)
+
+        binding.previewView.getLocationInWindow(
+            previewLocation
+        )
+
+        binding.root.getLocationInWindow(
+            rootLocation
+        )
+
+        val parentX =
+            previewLocation[0] -
+                rootLocation[0] +
+                x
+
+        val parentY =
+            previewLocation[1] -
+                rootLocation[1] +
+                y
+
         binding.focusIndicator.x =
-            x - (binding.focusIndicator.width / 2f)
+            parentX -
+                (binding.focusIndicator.width / 2f)
 
         binding.focusIndicator.y =
-            y - (binding.focusIndicator.height / 2f)
+            parentY -
+                (binding.focusIndicator.height / 2f)
 
         binding.focusIndicator.alpha = 1f
+        binding.focusIndicator.scaleX = 1.18f
+        binding.focusIndicator.scaleY = 1.18f
         binding.focusIndicator.visibility = View.VISIBLE
 
         binding.focusIndicator
             .animate()
+            .scaleX(1f)
+            .scaleY(1f)
             .alpha(0f)
-            .setStartDelay(650L)
+            .setStartDelay(700L)
             .setDuration(250L)
             .withEndAction {
                 binding.focusIndicator.visibility = View.GONE
                 binding.focusIndicator.alpha = 1f
+                binding.focusIndicator.scaleX = 1f
+                binding.focusIndicator.scaleY = 1f
             }
             .start()
     }
