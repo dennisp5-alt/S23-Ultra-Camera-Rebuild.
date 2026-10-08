@@ -21,10 +21,8 @@
     <View
         android:id="@+id/topGradient"
         android:layout_width="0dp"
-        android:layout_height="80dp"
+        android:layout_height="70dp"
         android:background="@drawable/camera_top_gradient"
-        android:clickable="false"
-        android:focusable="false"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
@@ -43,8 +41,8 @@
 
     <View
         android:id="@+id/focusIndicator"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
+        android:layout_width="42dp"
+        android:layout_height="42dp"
         android:background="@drawable/focus_ring"
         android:visibility="gone"
         app:layout_constraintTop_toTopOf="parent"
@@ -53,9 +51,9 @@
     <LinearLayout
         android:id="@+id/topBar"
         android:layout_width="0dp"
-        android:layout_height="36dp"
+        android:layout_height="34dp"
         android:layout_marginStart="10dp"
-        android:layout_marginTop="6dp"
+        android:layout_marginTop="4dp"
         android:layout_marginEnd="10dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
@@ -66,41 +64,39 @@
         <TextView
             android:id="@+id/modePhotoButton"
             android:layout_width="wrap_content"
-            android:layout_height="30dp"
+            android:layout_height="28dp"
             android:background="@drawable/mode_selected_background"
             android:gravity="center"
-            android:minWidth="56dp"
+            android:minWidth="54dp"
             android:paddingHorizontal="7dp"
             android:text="@string/mode_photo"
             android:textColor="@android:color/white"
-            android:textSize="10sp"
+            android:textSize="9sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/modePortraitButton"
             android:layout_width="wrap_content"
-            android:layout_height="30dp"
+            android:layout_height="28dp"
             android:layout_marginStart="3dp"
-            android:background="@android:color/transparent"
             android:gravity="center"
-            android:minWidth="62dp"
+            android:minWidth="60dp"
             android:paddingHorizontal="7dp"
             android:text="@string/mode_portrait"
             android:textColor="#D9FFFFFF"
-            android:textSize="10sp" />
+            android:textSize="9sp" />
 
         <TextView
             android:id="@+id/modeNightButton"
             android:layout_width="wrap_content"
-            android:layout_height="30dp"
+            android:layout_height="28dp"
             android:layout_marginStart="3dp"
-            android:background="@android:color/transparent"
             android:gravity="center"
-            android:minWidth="48dp"
+            android:minWidth="46dp"
             android:paddingHorizontal="7dp"
             android:text="@string/mode_night"
             android:textColor="#D9FFFFFF"
-            android:textSize="10sp" />
+            android:textSize="9sp" />
 
         <Space
             android:layout_width="0dp"
@@ -109,27 +105,26 @@
 
         <ImageView
             android:id="@+id/thumbnailImage"
-            android:layout_width="34dp"
-            android:layout_height="34dp"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
             android:background="@drawable/thumbnail_background"
             android:clipToOutline="true"
             android:contentDescription="@string/latest_photo"
             android:scaleType="centerCrop" />
-
     </LinearLayout>
 
     <TextView
         android:id="@+id/statusText"
         android:layout_width="wrap_content"
-        android:layout_height="26dp"
+        android:layout_height="24dp"
         android:layout_marginStart="12dp"
-        android:layout_marginTop="2dp"
+        android:layout_marginTop="1dp"
         android:background="@drawable/status_background"
         android:gravity="center"
-        android:paddingHorizontal="8dp"
+        android:paddingHorizontal="7dp"
         android:text="@string/camera_ready"
         android:textColor="@android:color/white"
-        android:textSize="9sp"
+        android:textSize="8sp"
         android:textStyle="bold"
         app:layout_constraintTop_toBottomOf="@id/topBar"
         app:layout_constraintStart_toStartOf="parent" />
@@ -140,13 +135,10 @@
         android:layout_height="wrap_content"
         android:layout_marginStart="8dp"
         android:layout_marginEnd="8dp"
-        android:layout_marginBottom="6dp"
+        android:layout_marginBottom="5dp"
         android:background="@drawable/camera_panel_background"
         android:orientation="vertical"
-        android:paddingStart="8dp"
-        android:paddingTop="5dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="5dp"
+        android:padding="5dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
@@ -154,87 +146,81 @@
         <LinearLayout
             android:id="@+id/lensRow"
             android:layout_width="match_parent"
-            android:layout_height="28dp"
+            android:layout_height="32dp"
             android:gravity="center"
             android:orientation="horizontal">
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/zoom06Button"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="27dp"
-                android:layout_weight="1"
-                android:minHeight="0dp"
-                android:paddingHorizontal="1dp"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:background="@drawable/camera_circle_button"
+                android:padding="0dp"
                 android:text="@string/lens_06"
                 android:textAllCaps="false"
-                android:textSize="8sp" />
+                android:textColor="@android:color/white"
+                android:textSize="7sp" />
 
-            <Space android:layout_width="4dp" android:layout_height="1dp" />
+            <Space android:layout_width="14dp" android:layout_height="1dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/zoom1Button"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="27dp"
-                android:layout_weight="1"
-                android:minHeight="0dp"
-                android:paddingHorizontal="1dp"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:background="@drawable/camera_circle_button"
+                android:padding="0dp"
                 android:text="@string/lens_1"
                 android:textAllCaps="false"
+                android:textColor="@android:color/white"
                 android:textSize="8sp" />
 
-            <Space android:layout_width="4dp" android:layout_height="1dp" />
+            <Space android:layout_width="14dp" android:layout_height="1dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/zoom3Button"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="27dp"
-                android:layout_weight="1"
-                android:minHeight="0dp"
-                android:paddingHorizontal="1dp"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:background="@drawable/camera_circle_button"
+                android:padding="0dp"
                 android:text="@string/lens_3"
                 android:textAllCaps="false"
+                android:textColor="@android:color/white"
                 android:textSize="8sp" />
 
-            <Space android:layout_width="4dp" android:layout_height="1dp" />
+            <Space android:layout_width="14dp" android:layout_height="1dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/zoom10Button"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="27dp"
-                android:layout_weight="1"
-                android:minHeight="0dp"
-                android:paddingHorizontal="1dp"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:background="@drawable/camera_circle_button"
+                android:padding="0dp"
                 android:text="@string/lens_10"
                 android:textAllCaps="false"
-                android:textSize="8sp" />
-
+                android:textColor="@android:color/white"
+                android:textSize="7sp" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="31dp"
-            android:layout_marginTop="1dp"
+            android:layout_height="28dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
             <TextView
                 android:id="@+id/zoomLabel"
-                android:layout_width="42dp"
+                android:layout_width="40dp"
                 android:layout_height="wrap_content"
                 android:gravity="center"
                 android:text="@string/zoom_label"
                 android:textColor="@android:color/white"
-                android:textSize="9sp"
+                android:textSize="8sp"
                 android:textStyle="bold" />
 
             <SeekBar
                 android:id="@+id/zoomSlider"
                 android:layout_width="0dp"
-                android:layout_height="29dp"
+                android:layout_height="26dp"
                 android:layout_weight="1"
                 android:max="100"
                 android:progress="0"
@@ -244,84 +230,76 @@
 
             <TextView
                 android:id="@+id/evLabel"
-                android:layout_width="52dp"
+                android:layout_width="48dp"
                 android:layout_height="wrap_content"
                 android:gravity="center"
                 android:text="EV +0.0"
                 android:textColor="@android:color/white"
-                android:textSize="8sp"
+                android:textSize="7sp"
                 android:textStyle="bold" />
 
             <SeekBar
                 android:id="@+id/evSlider"
                 android:layout_width="0dp"
-                android:layout_height="29dp"
+                android:layout_height="26dp"
                 android:layout_weight="1"
                 android:max="0"
                 android:progress="0"
                 android:splitTrack="false" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/evResetButton"
-                style="@style/Widget.Material3.Button.TextButton"
-                android:layout_width="46dp"
-                android:layout_height="27dp"
-                android:minHeight="0dp"
-                android:paddingHorizontal="1dp"
-                android:text="@string/ev_reset"
+                android:layout_width="26dp"
+                android:layout_height="26dp"
+                android:background="@drawable/camera_circle_button"
+                android:padding="0dp"
+                android:text="0"
                 android:textAllCaps="false"
-                android:textSize="7sp" />
-
+                android:textColor="@android:color/white"
+                android:textSize="8sp" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="46dp"
-            android:layout_marginTop="1dp"
+            android:layout_height="44dp"
             android:gravity="center"
             android:orientation="horizontal">
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/flashButton"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="30dp"
-                android:layout_weight="1"
-                android:minHeight="0dp"
-                android:paddingHorizontal="1dp"
-                android:text="@string/flash_button"
-                android:textAllCaps="false"
-                android:textSize="8sp" />
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="@drawable/camera_circle_button"
+                android:padding="0dp"
+                android:text="⚡"
+                android:textColor="@android:color/white"
+                android:textSize="12sp" />
 
-            <Space android:layout_width="4dp" android:layout_height="1dp" />
+            <Space android:layout_width="10dp" android:layout_height="1dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/timerButton"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="30dp"
-                android:layout_weight="1"
-                android:minHeight="0dp"
-                android:paddingHorizontal="1dp"
-                android:text="@string/timer_button"
-                android:textAllCaps="false"
-                android:textSize="8sp" />
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="@drawable/camera_circle_button"
+                android:padding="0dp"
+                android:text="⏱"
+                android:textColor="@android:color/white"
+                android:textSize="11sp" />
 
-            <Space android:layout_width="4dp" android:layout_height="1dp" />
+            <Space android:layout_width="10dp" android:layout_height="1dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/switchCameraButton"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="30dp"
-                android:layout_weight="1"
-                android:minHeight="0dp"
-                android:paddingHorizontal="1dp"
-                android:text="@string/switch_camera_button"
-                android:textAllCaps="false"
-                android:textSize="8sp" />
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="@drawable/camera_circle_button"
+                android:padding="0dp"
+                android:text="⇄"
+                android:textColor="@android:color/white"
+                android:textSize="12sp" />
 
-            <Space android:layout_width="6dp" android:layout_height="1dp" />
+            <Space android:layout_width="14dp" android:layout_height="1dp" />
 
             <ImageButton
                 android:id="@+id/captureButton"
@@ -331,22 +309,17 @@
                 android:contentDescription="@string/capture_photo"
                 android:padding="0dp" />
 
-            <Space android:layout_width="6dp" android:layout_height="1dp" />
+            <Space android:layout_width="14dp" android:layout_height="1dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/gridButton"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="30dp"
-                android:layout_weight="1"
-                android:minHeight="0dp"
-                android:paddingHorizontal="1dp"
-                android:text="@string/grid_button"
-                android:textAllCaps="false"
-                android:textSize="8sp" />
-
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="@drawable/camera_circle_button"
+                android:padding="0dp"
+                android:text="▦"
+                android:textColor="@android:color/white"
+                android:textSize="11sp" />
         </LinearLayout>
-
     </LinearLayout>
-
 </androidx.constraintlayout.widget.ConstraintLayout>
