@@ -961,35 +961,56 @@ class MainActivity : AppCompatActivity() {
 
         binding.flashButton.text =
             when (flashMode) {
-                ImageCapture.FLASH_MODE_AUTO ->
-                    "Flash Auto"
+                ImageCapture.FLASH_MODE_AUTO -> "A"
+                ImageCapture.FLASH_MODE_ON -> "⚡"
+                else -> "⚡"
+            }
 
-                ImageCapture.FLASH_MODE_ON ->
-                    "Flash On"
+        binding.flashButton.contentDescription =
+            when (flashMode) {
+                ImageCapture.FLASH_MODE_AUTO -> "Flash Auto"
+                ImageCapture.FLASH_MODE_ON -> "Flash On"
+                else -> "Flash Off"
+            }
 
-                else ->
-                    "Flash Off"
+        binding.flashButton.alpha =
+            if (!hasFlash) {
+                0.30f
+            } else if (flashMode == ImageCapture.FLASH_MODE_OFF) {
+                0.58f
+            } else {
+                1f
             }
 
         binding.timerButton.text =
             if (timerSeconds == 0) {
+                "⏱"
+            } else {
+                timerSeconds.toString()
+            }
+
+        binding.timerButton.contentDescription =
+            if (timerSeconds == 0) {
                 "Timer Off"
             } else {
-                "Timer " + timerSeconds + "s"
+                "Timer " + timerSeconds + " seconds"
             }
 
-        binding.gridButton.text =
-            if (gridEnabled) {
-                "Grid On"
-            } else {
-                "Grid Off"
-            }
+        binding.timerButton.alpha =
+            if (timerSeconds == 0) 0.62f else 1f
 
-        binding.switchCameraButton.text =
+        binding.gridButton.text = "▦"
+        binding.gridButton.contentDescription =
+            if (gridEnabled) "Grid On" else "Grid Off"
+        binding.gridButton.alpha =
+            if (gridEnabled) 1f else 0.62f
+
+        binding.switchCameraButton.text = "⇄"
+        binding.switchCameraButton.contentDescription =
             if (lensFacing == CameraSelector.LENS_FACING_BACK) {
-                "Front"
+                "Switch to front camera"
             } else {
-                "Rear"
+                "Switch to rear camera"
             }
 
         binding.zoomLabel.text =
