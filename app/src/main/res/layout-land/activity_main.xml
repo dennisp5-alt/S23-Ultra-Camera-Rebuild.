@@ -98,6 +98,18 @@
             android:textColor="#D9FFFFFF"
             android:textSize="9sp" />
 
+        <TextView
+            android:id="@+id/modeMacroButton"
+            android:layout_width="wrap_content"
+            android:layout_height="28dp"
+            android:layout_marginStart="3dp"
+            android:gravity="center"
+            android:minWidth="52dp"
+            android:paddingHorizontal="7dp"
+            android:text="Macro"
+            android:textColor="#D9FFFFFF"
+            android:textSize="9sp" />
+
         <Space
             android:layout_width="0dp"
             android:layout_height="1dp"
