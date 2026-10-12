@@ -134,6 +134,7 @@ class MainActivity : AppCompatActivity() {
         binding.modePhotoButton.setOnClickListener { setMode("Photo") }
         binding.modePortraitButton.setOnClickListener { setMode("Portrait") }
         binding.modeNightButton.setOnClickListener { setMode("Night") }
+        binding.modeMacroButton.setOnClickListener { setMode("Macro") }
 
         binding.zoom06Button.setOnClickListener { setZoomShortcut(0.6f) }
         binding.zoom1Button.setOnClickListener { setZoomShortcut(1f) }
@@ -320,6 +321,7 @@ class MainActivity : AppCompatActivity() {
 
             observeZoomState()
             configureExposureControl()
+            applyModeSpecificCameraControls()
             updateUi()
 
         } catch (e: Exception) {
@@ -358,7 +360,12 @@ class MainActivity : AppCompatActivity() {
 
         if (requestedExtension == null) {
             usingOemExtension = false
-            activeModeBackend = "Photo"
+            activeModeBackend =
+                when (currentMode) {
+                    "Macro" -> "Macro • close focus"
+                    "Night" -> "Night • low light"
+                    else -> "Photo"
+                }
             return baseSelector
         }
 
@@ -408,6 +415,15 @@ class MainActivity : AppCompatActivity() {
             maxZoomRatio = state.maxZoomRatio
             currentZoomRatio = state.zoomRatio
 
+            if (
+                currentMode == "Macro" &&
+                lensFacing == CameraSelector.LENS_FACING_BACK &&
+                kotlin.math.abs(currentZoomRatio - minZoomRatio) > 0.01f
+            ) {
+                camera?.cameraControl?.setZoomRatio(minZoomRatio)
+                return@observe
+            }
+
             binding.zoomSlider.progress =
                 zoomToSliderProgress(currentZoomRatio)
 
@@ -428,9 +444,9 @@ class MainActivity : AppCompatActivity() {
             lensFacing == CameraSelector.LENS_FACING_BACK
 
         binding.lensRow.visibility =
-            if (rear) View.VISIBLE else View.GONE
+            if (rear && currentMode != "Macro") View.VISIBLE else View.GONE
 
-        if (!rear) return
+        if (!rear || currentMode == "Macro") return
 
         binding.zoom06Button.isEnabled =
             minZoomRatio <= 0.61f &&
@@ -579,7 +595,8 @@ class MainActivity : AppCompatActivity() {
                 camera2Control != null &&
                 sensorExposureRange != null &&
                 sensorIsoRange != null &&
-                !usingOemExtension
+                !usingOemExtension &&
+                currentMode != "Night"
 
         binding.evSlider.isEnabled = supported
         binding.evResetButton.isEnabled = supported
@@ -588,11 +605,94 @@ class MainActivity : AppCompatActivity() {
 
         if (usingOemExtension) {
             binding.evLabel.text = "EV locked"
+        } else if (currentMode == "Night") {
+            binding.evLabel.text = "EV auto"
         } else if (!supported) {
             binding.evLabel.text = "EV unavailable"
         } else {
             updateExposureLabel()
             setAutoExposure()
+        }
+    }
+
+    private fun applyModeSpecificCameraControls() {
+        if (usingOemExtension) return
+
+        val activeCamera = camera ?: return
+        val control = camera2Control ?: return
+
+        try {
+            val info = Camera2CameraInfo.from(activeCamera.cameraInfo)
+
+            when (currentMode) {
+                "Macro" -> {
+                    val afModes =
+                        info.getCameraCharacteristic(
+                            CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES
+                        )
+
+                    if (
+                        afModes?.contains(
+                            CaptureRequest.CONTROL_AF_MODE_MACRO
+                        ) == true
+                    ) {
+                        val options =
+                            CaptureRequestOptions.Builder()
+                                .setCaptureRequestOption(
+                                    CaptureRequest.CONTROL_AF_MODE,
+                                    CaptureRequest.CONTROL_AF_MODE_MACRO
+                                )
+                                .build()
+
+                        control.setCaptureRequestOptions(options)
+                        activeModeBackend = "Macro • AF macro"
+                    } else {
+                        activeModeBackend = "Macro • close focus"
+                    }
+
+                    mainHandler.postDelayed({
+                        camera?.cameraControl?.setZoomRatio(minZoomRatio)
+                    }, 250L)
+                }
+
+                "Night" -> {
+                    val aeModes =
+                        info.getCameraCharacteristic(
+                            CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES
+                        )
+
+                    val lowLightMode =
+                        CaptureRequest.CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY
+
+                    val selectedAeMode =
+                        if (
+                            android.os.Build.VERSION.SDK_INT >= 35 &&
+                            aeModes?.contains(lowLightMode) == true
+                        ) {
+                            activeModeBackend = "Night • low-light boost"
+                            lowLightMode
+                        } else {
+                            activeModeBackend = "Night • standard"
+                            CaptureRequest.CONTROL_AE_MODE_ON
+                        }
+
+                    val options =
+                        CaptureRequestOptions.Builder()
+                            .setCaptureRequestOption(
+                                CaptureRequest.CONTROL_AE_MODE,
+                                selectedAeMode
+                            )
+                            .setCaptureRequestOption(
+                                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                                0
+                            )
+                            .build()
+
+                    control.setCaptureRequestOptions(options)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Mode-specific camera controls unavailable", e)
         }
     }
 
@@ -834,6 +934,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun switchCamera() {
+        if (currentMode == "Macro") {
+            currentMode = "Photo"
+            activeModeBackend = "Photo"
+            updateModeButtons()
+        }
+
         lensFacing =
             if (lensFacing == CameraSelector.LENS_FACING_BACK) {
                 CameraSelector.LENS_FACING_FRONT
@@ -909,6 +1015,11 @@ class MainActivity : AppCompatActivity() {
             flashMode = ImageCapture.FLASH_MODE_OFF
         }
 
+        if (mode == "Macro") {
+            lensFacing = CameraSelector.LENS_FACING_BACK
+            currentZoomRatio = 0.6f
+        }
+
         updateModeButtons()
         updateUi()
         bindCamera()
@@ -928,6 +1039,11 @@ class MainActivity : AppCompatActivity() {
         applyModeStyle(
             binding.modeNightButton,
             currentMode == "Night"
+        )
+
+        applyModeStyle(
+            binding.modeMacroButton,
+            currentMode == "Macro"
         )
     }
 
@@ -1012,6 +1128,16 @@ class MainActivity : AppCompatActivity() {
             } else {
                 "Switch to rear camera"
             }
+
+        binding.switchCameraButton.isEnabled = currentMode != "Macro"
+        binding.switchCameraButton.alpha =
+            if (currentMode == "Macro") 0.30f else 1f
+
+        binding.zoomSlider.isEnabled =
+            currentMode != "Macro" && !usingOemExtension
+        if (currentMode == "Macro") {
+            binding.zoomSlider.alpha = 0.35f
+        }
 
         binding.zoomLabel.text =
             String.format(
