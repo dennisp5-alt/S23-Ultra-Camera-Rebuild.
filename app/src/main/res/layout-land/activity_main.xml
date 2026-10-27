@@ -7,12 +7,14 @@
     android:background="@android:color/black"
     android:fitsSystemWindows="true">
 
+    <!-- 4:3 frame = the exact shape of the saved photo (WYSIWYG). -->
     <androidx.camera.view.PreviewView
         android:id="@+id/previewView"
         android:layout_width="0dp"
         android:layout_height="0dp"
         app:implementationMode="performance"
-        app:scaleType="fillCenter"
+        app:scaleType="fitCenter"
+        app:layout_constraintDimensionRatio="4:3"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -34,10 +36,10 @@
         android:alpha="0"
         android:clickable="false"
         android:focusable="false"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        app:layout_constraintTop_toTopOf="@id/previewView"
+        app:layout_constraintBottom_toBottomOf="@id/previewView"
+        app:layout_constraintStart_toStartOf="@id/previewView"
+        app:layout_constraintEnd_toEndOf="@id/previewView" />
 
     <View
         android:id="@+id/focusIndicator"

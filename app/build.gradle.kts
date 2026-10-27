@@ -11,19 +11,40 @@ android {
         applicationId = "com.dennis.s23camera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.7-rebuild"
+        versionCode = 9
+        versionName = "1.8-rebuild"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Filled in by the GitHub Actions workflow from repository secrets.
+    // Same key every build = new builds install over the old one.
+    val releaseKeystore = System.getenv("SIGNING_KEYSTORE_PATH")
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Shrinks the APK from ~15 MB to a few MB. If something works in
+            // debug but not in release, set both of these to false.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

@@ -3,6 +3,10 @@ name: Build APK
 on:
   push:
     branches: [ main ]
+  # Pull requests get a test build too, so changes are proven to compile
+  # (and the APK can be tried) before they are merged.
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -32,30 +36,54 @@ jobs:
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER"             "platform-tools"             "platforms;android-35"             "build-tools;35.0.0"
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Build Debug APK
-        run: |
-          gradle             --no-daemon             --stacktrace             :app:assembleDebug
-
-      - name: Verify APK
+      # Signed release build when the 4 SIGNING_* secrets exist (same key every
+      # run, so each new APK installs over the previous one). Without them it
+      # falls back to a debug build, which gets a NEW random key every run.
+      - name: Build APK
         shell: bash
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -n 1)"
+          set -eu
 
-          if [ -z "$APK" ]; then
-            echo "ERROR: Debug APK was not created."
+          VERSION="$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)"
+
+          if [ -n "${SIGNING_KEYSTORE_BASE64:-}" ]; then
+            echo "$SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+            export SIGNING_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+            gradle --no-daemon --stacktrace :app:assembleRelease
+            BUILT="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)"
+            KIND="release"
+          else
+            echo "::warning::SIGNING_* secrets not set - building a DEBUG APK. Its signature changes every run, so it cannot install over the previous build."
+            # The unsigned release build isn't uploaded; it only proves the
+            # shrunk (R8) release still compiles before signing is set up.
+            gradle --no-daemon --stacktrace :app:assembleDebug :app:assembleRelease
+            BUILT="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -n 1)"
+            KIND="debug"
+          fi
+
+          if [ -z "$BUILT" ]; then
+            echo "::error::No APK was produced."
             exit 1
           fi
 
-          echo "APK found:"
-          ls -lh "$APK"
-          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          OUT="S23-Ultra-Camera-v${VERSION}-${KIND}-build${GITHUB_RUN_NUMBER}.apk"
+          cp "$BUILT" "$OUT"
+          ls -lh "$OUT"
 
-      - name: Upload Debug APK
+          echo "APK_PATH=$OUT" >> "$GITHUB_ENV"
+          echo "APK_NAME=${OUT%.apk}" >> "$GITHUB_ENV"
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: S23-Ultra-Camera-Rebuild-debug
+          name: ${{ env.APK_NAME }}
           path: ${{ env.APK_PATH }}
           if-no-files-found: error
           retention-days: 14
