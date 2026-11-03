@@ -33,6 +33,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -116,6 +117,11 @@ class MainActivity : AppCompatActivity() {
     private var currentLook = Look.KODAK
     private val lutCache = HashMap<Look, LutLook>()
 
+    // Hi-Q: a RAW burst merged and developed in-app, still saved as a JPEG.
+    // Rear camera, Auto mode, 1x only. Off = the normal capture path.
+    private var hiQEnabled = false
+    private val captureResults = CaptureResultStore()
+
     // Loaded on first use and kept; returns null for Off or a failed load.
     private fun lutFor(look: Look): LutLook? {
         val asset = look.asset ?: return null
@@ -173,6 +179,7 @@ class MainActivity : AppCompatActivity() {
         setupControls()
         updateModeButtons()
         updateLookButton()
+        updateHiQButton()
         updateUi()
         restoreLastPhoto()
 
@@ -212,6 +219,7 @@ class MainActivity : AppCompatActivity() {
         outState.putFloat(STATE_ZOOM, currentZoomRatio)
         outState.putInt(STATE_EV, currentExposureIndex)
         outState.putString(STATE_LOOK, currentLook.name)
+        outState.putBoolean(STATE_HIQ, hiQEnabled)
     }
 
     private fun restoreState(state: Bundle?) {
@@ -226,6 +234,7 @@ class MainActivity : AppCompatActivity() {
             state.getString(STATE_LOOK)
                 ?.let { name -> Look.values().firstOrNull { it.name == name } }
                 ?: currentLook
+        hiQEnabled = state.getBoolean(STATE_HIQ, false)
 
         val zoom = state.getFloat(STATE_ZOOM, 1f)
         pendingZoomRatio = zoom
@@ -240,6 +249,7 @@ class MainActivity : AppCompatActivity() {
         binding.timerButton.setOnClickListener { toggleTimer() }
         binding.gridButton.setOnClickListener { toggleGrid() }
         binding.lookButton.setOnClickListener { toggleLook() }
+        binding.hiQButton.setOnClickListener { toggleHiQ() }
         binding.thumbnailImage.setOnClickListener { openLastPhoto() }
 
         binding.modePhotoButton.setOnClickListener { setMode("Photo") }
@@ -424,22 +434,43 @@ class MainActivity : AppCompatActivity() {
 
             val rotation = currentDisplayRotation()
 
-            val preview = Preview.Builder()
+            val previewBuilder = Preview.Builder()
                 .setTargetRotation(rotation)
-                .build()
-                .also {
-                    it.setSurfaceProvider(
-                        binding.previewView.surfaceProvider
-                    )
-                }
 
-            imageCapture = ImageCapture.Builder()
-                .setCaptureMode(
-                    ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
-                )
+            val captureBuilder = ImageCapture.Builder()
                 .setTargetRotation(rotation)
-                .setFlashMode(flashMode)
-                .build()
+
+            if (hiQEnabled) {
+                // RAW burst: quick captures, no flash, and per-frame metadata
+                // (white balance, colour matrix, lens shading, noise) from
+                // both the preview and the stills.
+                captureBuilder
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .setOutputFormat(ImageCapture.OUTPUT_FORMAT_RAW)
+                    .setFlashMode(ImageCapture.FLASH_MODE_OFF)
+                Camera2Interop.Extender(captureBuilder)
+                    .setSessionCaptureCallback(captureResults)
+                    .setCaptureRequestOption(
+                        CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
+                        CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON
+                    )
+                Camera2Interop.Extender(previewBuilder)
+                    .setSessionCaptureCallback(captureResults)
+                    .setCaptureRequestOption(
+                        CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
+                        CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON
+                    )
+            } else {
+                captureBuilder
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .setFlashMode(flashMode)
+            }
+
+            val preview = previewBuilder.build().also {
+                it.setSurfaceProvider(binding.previewView.surfaceProvider)
+            }
+
+            imageCapture = captureBuilder.build()
 
             provider.unbindAll()
 
@@ -472,6 +503,18 @@ class MainActivity : AppCompatActivity() {
 
         } catch (e: Exception) {
             Log.e(TAG, "Camera binding failed", e)
+
+            if (hiQEnabled) {
+                hiQEnabled = false
+                updateHiQButton()
+                mainHandler.post { bindCamera() }
+                Toast.makeText(
+                    this,
+                    "Hi-Q isn't available on this camera.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                return
+            }
 
             if (currentMode != "Photo") {
                 currentMode = "Photo"
@@ -509,7 +552,7 @@ class MainActivity : AppCompatActivity() {
             activeModeBackend =
                 when (currentMode) {
                     "Macro" -> "Macro • close focus"
-                    else -> "Auto"
+                    else -> if (hiQEnabled) "Auto • Hi-Q" else "Auto"
                 }
             return baseSelector
         }
@@ -566,6 +609,16 @@ class MainActivity : AppCompatActivity() {
                 abs(currentZoomRatio - minZoomRatio) > 0.01f
             ) {
                 camera?.cameraControl?.setZoomRatio(minZoomRatio)
+                return@observe
+            }
+
+            // Hi-Q is 1x only: RAW frames ignore digital zoom.
+            if (
+                hiQEnabled &&
+                abs(currentZoomRatio - 1f) > 0.01f &&
+                minZoomRatio <= 1f && maxZoomRatio >= 1f
+            ) {
+                camera?.cameraControl?.setZoomRatio(1f)
                 return@observe
             }
 
@@ -634,6 +687,7 @@ class MainActivity : AppCompatActivity() {
     private fun isZoomAdjustable(): Boolean =
         camera != null &&
             currentMode != "Macro" &&
+            !hiQEnabled &&
             maxZoomRatio > minZoomRatio + 0.01f
 
     private fun setZoomRatioSafely(target: Float) {
@@ -655,10 +709,12 @@ class MainActivity : AppCompatActivity() {
         val rear =
             lensFacing == CameraSelector.LENS_FACING_BACK
 
-        binding.lensRow.visibility =
-            if (rear && currentMode != "Macro") View.VISIBLE else View.GONE
+        val lensesUsable = rear && currentMode != "Macro" && !hiQEnabled
 
-        if (!rear || currentMode == "Macro") return
+        binding.lensRow.visibility =
+            if (lensesUsable) View.VISIBLE else View.GONE
+
+        if (!lensesUsable) return
 
         binding.zoom06Button.isEnabled =
             minZoomRatio <= 0.61f &&
@@ -701,7 +757,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setZoomShortcut(target: Float) {
-        if (lensFacing != CameraSelector.LENS_FACING_BACK) {
+        if (lensFacing != CameraSelector.LENS_FACING_BACK || hiQEnabled) {
             return
         }
 
@@ -1022,6 +1078,12 @@ class MainActivity : AppCompatActivity() {
             updateModeButtons()
         }
 
+        // Hi-Q is rear-camera only.
+        if (hiQEnabled) {
+            hiQEnabled = false
+            updateHiQButton()
+        }
+
         lensFacing =
             if (lensFacing == CameraSelector.LENS_FACING_BACK) {
                 CameraSelector.LENS_FACING_FRONT
@@ -1036,6 +1098,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleFlash() {
+        if (hiQEnabled) {
+            Toast.makeText(
+                this,
+                "Flash is off in Hi-Q.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
         if (currentMode == "Night") {
             Toast.makeText(
                 this,
@@ -1090,6 +1161,12 @@ class MainActivity : AppCompatActivity() {
         if (currentMode == mode || captureInProgress) return
 
         currentMode = mode
+
+        // Hi-Q belongs to Auto; other modes turn it off.
+        if (mode != "Photo" && hiQEnabled) {
+            hiQEnabled = false
+            updateHiQButton()
+        }
 
         if (mode == "Night") {
             flashMode = ImageCapture.FLASH_MODE_OFF
@@ -1152,7 +1229,8 @@ class MainActivity : AppCompatActivity() {
     private fun updateUi() {
         val hasFlash =
             camera?.cameraInfo?.hasFlashUnit() == true &&
-                currentMode != "Night"
+                currentMode != "Night" &&
+                !hiQEnabled
 
         binding.flashButton.isEnabled = hasFlash
 
@@ -1312,6 +1390,11 @@ class MainActivity : AppCompatActivity() {
         binding.captureButton.isEnabled = false
         binding.captureButton.alpha = 0.6f
         binding.statusText.text = "Capturing…"
+
+        if (hiQEnabled) {
+            captureHiQ(capture, lutFor(currentLook))
+            return
+        }
 
         val lut = lutFor(currentLook)
         if (lut != null) {
@@ -1523,6 +1606,12 @@ class MainActivity : AppCompatActivity() {
         val looked = lut.applyToBitmap(upright)
         if (looked != upright) upright.recycle()
 
+        return saveJpeg(looked)
+    }
+
+    // Writes the bitmap as a quality-100 JPEG to MediaStore and recycles it.
+    // Runs on cameraExecutor, never the main thread.
+    private fun saveJpeg(bitmap: Bitmap): Uri? {
         val values = ContentValues().apply {
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
                 .format(System.currentTimeMillis())
@@ -1535,7 +1624,7 @@ class MainActivity : AppCompatActivity() {
         val uri = contentResolver.insert(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
         ) ?: run {
-            looked.recycle()
+            bitmap.recycle()
             return null
         }
 
@@ -1543,20 +1632,20 @@ class MainActivity : AppCompatActivity() {
             val stream = contentResolver.openOutputStream(uri)
             if (stream == null) {
                 contentResolver.delete(uri, null, null)
-                looked.recycle()
+                bitmap.recycle()
                 return null
             }
             stream.use { out ->
-                looked.compress(Bitmap.CompressFormat.JPEG, 100, out)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Saving looked image failed", e)
+            Log.e(TAG, "Saving image failed", e)
             contentResolver.delete(uri, null, null)
-            looked.recycle()
+            bitmap.recycle()
             return null
         }
 
-        looked.recycle()
+        bitmap.recycle()
 
         val done = ContentValues().apply {
             put(MediaStore.MediaColumns.IS_PENDING, 0)
@@ -1564,6 +1653,230 @@ class MainActivity : AppCompatActivity() {
         contentResolver.update(uri, done, null, null)
 
         return uri
+    }
+
+    // ---------------------------------------------------------------- Hi-Q
+
+    private fun rearCameraSupportsRaw(): Boolean {
+        val provider = cameraProvider ?: return false
+        return try {
+            val info =
+                CameraSelector.DEFAULT_BACK_CAMERA
+                    .filter(provider.availableCameraInfos)
+                    .firstOrNull()
+                    ?: return false
+            ImageCapture.getImageCaptureCapabilities(info)
+                .supportedOutputFormats
+                .contains(ImageCapture.OUTPUT_FORMAT_RAW)
+        } catch (e: Exception) {
+            Log.w(TAG, "RAW support check failed", e)
+            false
+        }
+    }
+
+    private fun toggleHiQ() {
+        if (captureInProgress || countdownActive) return
+
+        if (hiQEnabled) {
+            hiQEnabled = false
+            pendingExposureIndex = currentExposureIndex
+            updateHiQButton()
+            updateUi()
+            bindCamera()
+            Toast.makeText(this, "Hi-Q off", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (!rearCameraSupportsRaw()) {
+            Toast.makeText(
+                this,
+                "This camera doesn't provide RAW, so Hi-Q isn't available.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        hiQEnabled = true
+        currentMode = "Photo"
+        lensFacing = CameraSelector.LENS_FACING_BACK
+        flashMode = ImageCapture.FLASH_MODE_OFF
+        currentZoomRatio = 1f
+        pendingZoomRatio = null
+        pendingExposureIndex = currentExposureIndex
+
+        updateModeButtons()
+        updateHiQButton()
+        updateUi()
+        bindCamera()
+
+        Toast.makeText(
+            this,
+            "Hi-Q on: merges " + HIQ_FRAMES + " RAW frames. Hold still. 1× only.",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun updateHiQButton() {
+        binding.hiQButton.text = "HQ"
+        binding.hiQButton.alpha = if (hiQEnabled) 1f else 0.62f
+        binding.hiQButton.setBackgroundResource(
+            if (hiQEnabled) R.drawable.camera_circle_button_selected
+            else R.drawable.camera_circle_button
+        )
+        binding.hiQButton.contentDescription =
+            if (hiQEnabled) "Hi-Q on" else "Hi-Q off"
+    }
+
+    private fun captureHiQ(capture: ImageCapture, lut: LutLook?) {
+        val statics = camera?.let { RawStatics.read(it.cameraInfo) }
+        if (statics == null) {
+            finishCapture()
+            Toast.makeText(
+                this,
+                "Hi-Q couldn't read this camera's sensor details.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val processor = HiQProcessor(
+            statics,
+            captureResults,
+            currentExposureIndex * exposureStep
+        )
+        captureHiQFrame(capture, processor, 0, lut)
+    }
+
+    // Takes one frame of the burst; each arriving frame is merged on the
+    // camera executor while the next one is being captured.
+    private fun captureHiQFrame(
+        capture: ImageCapture,
+        processor: HiQProcessor,
+        index: Int,
+        lut: LutLook?
+    ) {
+        if (isDestroyed) {
+            processor.close()
+            return
+        }
+
+        binding.statusText.text =
+            "Hi-Q " + (index + 1) + "/" + HIQ_FRAMES + " • hold still"
+
+        capture.takePicture(
+            ContextCompat.getMainExecutor(this),
+            object : ImageCapture.OnImageCapturedCallback() {
+
+                override fun onCaptureStarted() {
+                    if (index == 0 && !isDestroyed) playShutterAnimation()
+                }
+
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    val frame =
+                        try {
+                            copyRawFrame(image)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Copying RAW frame failed", e)
+                            null
+                        } finally {
+                            image.close()
+                        }
+
+                    if (frame == null) {
+                        endHiQBurst(processor, lut, index)
+                        return
+                    }
+
+                    try {
+                        cameraExecutor.execute { processor.add(frame) }
+                    } catch (e: RejectedExecutionException) {
+                        processor.close()
+                        return
+                    }
+
+                    if (index + 1 < HIQ_FRAMES) {
+                        captureHiQFrame(capture, processor, index + 1, lut)
+                    } else {
+                        finishHiQ(processor, lut)
+                    }
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    Log.e(TAG, "Hi-Q frame " + index + " failed", exception)
+                    endHiQBurst(processor, lut, index)
+                }
+            }
+        )
+    }
+
+    // A frame failed: develop the frames already captured, if any.
+    private fun endHiQBurst(processor: HiQProcessor, lut: LutLook?, framesCaptured: Int) {
+        if (framesCaptured > 0) {
+            finishHiQ(processor, lut)
+            return
+        }
+        processor.close()
+        if (!isDestroyed) {
+            finishCapture()
+            toastCaptureFailed()
+        }
+    }
+
+    private fun finishHiQ(processor: HiQProcessor, lut: LutLook?) {
+        if (!isDestroyed) {
+            binding.statusText.text = "Hi-Q • merging and developing…"
+        }
+
+        try {
+            cameraExecutor.execute {
+                val uri =
+                    try {
+                        val result = processor.finish(lut)
+                        Log.i(
+                            TAG,
+                            "Hi-Q merged " + processor.frames + " frames, metadata from " +
+                                processor.metadataSource
+                        )
+                        saveDeveloped(result)
+                    } catch (t: Throwable) {
+                        // Includes OutOfMemoryError: fail the shot, not the app.
+                        Log.e(TAG, "Hi-Q processing failed", t)
+                        null
+                    } finally {
+                        processor.close()
+                    }
+
+                runOnUiThread {
+                    if (isDestroyed) return@runOnUiThread
+                    finishCapture()
+                    if (uri != null) {
+                        rememberLastPhoto(uri)
+                        loadThumbnailAsync(uri)
+                    } else {
+                        toastCaptureFailed()
+                    }
+                }
+            }
+        } catch (e: RejectedExecutionException) {
+            processor.close()
+            if (!isDestroyed) {
+                finishCapture()
+                toastCaptureFailed()
+            }
+        }
+    }
+
+    private fun saveDeveloped(result: HiQProcessor.Result): Uri? {
+        var bitmap = Bitmap.createBitmap(
+            result.pixels, result.width, result.height, Bitmap.Config.ARGB_8888
+        )
+        if (result.rotation % 360 != 0) {
+            val m = Matrix().apply { postRotate(result.rotation.toFloat()) }
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
+            if (rotated != bitmap) bitmap.recycle()
+            bitmap = rotated
+        }
+        return saveJpeg(bitmap)
     }
 
     private fun applyPreviewLook() {
@@ -1814,6 +2127,10 @@ class MainActivity : AppCompatActivity() {
         private const val STATE_ZOOM = "zoom_ratio"
         private const val STATE_EV = "exposure_index"
         private const val STATE_LOOK = "fz55_look"
+        private const val STATE_HIQ = "hiq"
+
+        // Frames per Hi-Q burst: 4 roughly halves the noise.
+        private const val HIQ_FRAMES = 4
 
         private val COUNTDOWN_TOKEN = Any()
     }

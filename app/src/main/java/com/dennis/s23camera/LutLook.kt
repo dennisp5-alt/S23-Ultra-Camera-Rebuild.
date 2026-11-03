@@ -89,7 +89,7 @@ class LutLook(context: Context, private val assetName: String) {
     // ---- Saved-photo path: trilinear LUT over the whole bitmap ----
 
     /**
-     * Returns a new bitmap with the FZ55 look applied. Runs on the CPU with
+     * Returns a new bitmap with the look applied. Runs on the CPU with
      * trilinear interpolation. Call this off the main thread.
      */
     fun applyToBitmap(src: Bitmap): Bitmap {
@@ -99,12 +99,25 @@ class LutLook(context: Context, private val assetName: String) {
         val h = src.height
         val px = IntArray(w * h)
         src.getPixels(px, 0, w, 0, 0, w, h)
+        applyToPixels(px, 0, px.size)
+
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    /**
+     * Applies the LUT in place to ARGB pixels in [from, to). It only reads the
+     * LUT, so disjoint ranges can run on several threads at once.
+     */
+    fun applyToPixels(px: IntArray, from: Int, to: Int) {
+        if (!isLoaded) return
 
         val n = size
         val nm1 = (n - 1).toFloat()
 
-        var i = 0
-        while (i < px.size) {
+        var i = from
+        while (i < to) {
             val c = px[i]
             val a = c and -0x1000000 // 0xFF000000
             val r = (c ushr 16) and 0xFF
@@ -147,10 +160,6 @@ class LutLook(context: Context, private val assetName: String) {
             px[i] = a or (or shl 16) or (og shl 8) or ob
             i++
         }
-
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        out.setPixels(px, 0, w, 0, 0, w, h)
-        return out
     }
 
     // ---- Live-preview path: AGSL LUT shader as a RenderEffect (Android 13+) ----
