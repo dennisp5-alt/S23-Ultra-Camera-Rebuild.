@@ -12,7 +12,7 @@
         android:id="@+id/previewView"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        app:implementationMode="performance"
+        app:implementationMode="compatible"
         app:scaleType="fitCenter"
         app:layout_constraintDimensionRatio="4:3"
         app:layout_constraintTop_toTopOf="parent"
@@ -116,6 +116,20 @@
             android:layout_width="0dp"
             android:layout_height="1dp"
             android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/lookButton"
+            android:layout_width="wrap_content"
+            android:layout_height="28dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/mode_selected_background"
+            android:gravity="center"
+            android:minWidth="46dp"
+            android:paddingHorizontal="7dp"
+            android:text="FZ55"
+            android:textColor="@android:color/white"
+            android:textSize="9sp"
+            android:textStyle="bold" />
 
         <ImageView
             android:id="@+id/thumbnailImage"
