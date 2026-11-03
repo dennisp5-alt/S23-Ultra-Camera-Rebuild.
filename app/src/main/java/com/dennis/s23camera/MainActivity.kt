@@ -105,10 +105,23 @@ class MainActivity : AppCompatActivity() {
     private var countdownActive = false
     private var lastSavedUri: Uri? = null
 
-    // FZ55 look: reproduces the Kodak PIXPRO FZ55 rendering. On by default.
-    // When off, the capture path and preview are exactly the original ones.
-    private val fz55Look: FZ55Look by lazy { FZ55Look(this) }
-    private var fz55LookEnabled = true
+    // Camera looks (3D LUTs in assets/). The look button cycles through them.
+    // Off = the original CameraX capture path and an unfiltered preview.
+    private enum class Look(val label: String, val asset: String?) {
+        KODAK("FZ55", "fz55_look_v1_1.cube"),
+        CANON("G7X", "canon_g7x3_look_v1.cube"),
+        OFF("Off", null)
+    }
+
+    private var currentLook = Look.KODAK
+    private val lutCache = HashMap<Look, LutLook>()
+
+    // Loaded on first use and kept; returns null for Off or a failed load.
+    private fun lutFor(look: Look): LutLook? {
+        val asset = look.asset ?: return null
+        return lutCache.getOrPut(look) { LutLook(this, asset) }
+            .takeIf { it.isLoaded }
+    }
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -198,7 +211,7 @@ class MainActivity : AppCompatActivity() {
         outState.putBoolean(STATE_GRID, gridEnabled)
         outState.putFloat(STATE_ZOOM, currentZoomRatio)
         outState.putInt(STATE_EV, currentExposureIndex)
-        outState.putBoolean(STATE_LOOK, fz55LookEnabled)
+        outState.putString(STATE_LOOK, currentLook.name)
     }
 
     private fun restoreState(state: Bundle?) {
@@ -209,7 +222,10 @@ class MainActivity : AppCompatActivity() {
         flashMode = state.getInt(STATE_FLASH, flashMode)
         timerSeconds = state.getInt(STATE_TIMER, timerSeconds)
         gridEnabled = state.getBoolean(STATE_GRID, gridEnabled)
-        fz55LookEnabled = state.getBoolean(STATE_LOOK, fz55LookEnabled)
+        currentLook =
+            state.getString(STATE_LOOK)
+                ?.let { name -> Look.values().firstOrNull { it.name == name } }
+                ?: currentLook
 
         val zoom = state.getFloat(STATE_ZOOM, 1f)
         pendingZoomRatio = zoom
@@ -1297,8 +1313,9 @@ class MainActivity : AppCompatActivity() {
         binding.captureButton.alpha = 0.6f
         binding.statusText.text = "Capturing…"
 
-        if (fz55LookEnabled && fz55Look.isLoaded) {
-            capturePhotoWithLook(capture)
+        val lut = lutFor(currentLook)
+        if (lut != null) {
+            capturePhotoWithLook(capture, lut, currentLook.label)
         } else {
             capturePhotoDirect(capture)
         }
@@ -1385,8 +1402,12 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    // FZ55-look path: capture in memory, apply the LUT, then save the JPEG.
-    private fun capturePhotoWithLook(capture: ImageCapture) {
+    // Look path: capture in memory, apply the look's LUT, then save the JPEG.
+    private fun capturePhotoWithLook(
+        capture: ImageCapture,
+        lut: LutLook,
+        lookLabel: String
+    ) {
         capture.takePicture(
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageCapturedCallback() {
@@ -1424,16 +1445,16 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     if (!isDestroyed) {
-                        binding.statusText.text = "Applying FZ55 look…"
+                        binding.statusText.text = "Applying " + lookLabel + " look…"
                     }
 
                     try {
                         cameraExecutor.execute {
                             val uri =
                                 try {
-                                    processAndSave(jpeg, rotation)
+                                    processAndSave(jpeg, rotation, lut)
                                 } catch (e: Exception) {
-                                    Log.e(TAG, "FZ55 processing failed", e)
+                                    Log.e(TAG, "Look processing failed", e)
                                     null
                                 }
 
@@ -1479,7 +1500,11 @@ class MainActivity : AppCompatActivity() {
 
     // Decode -> rotate upright -> apply LUT -> write JPEG (quality 100).
     // Runs on cameraExecutor, never the main thread.
-    private fun processAndSave(jpeg: ByteArray, rotationDegrees: Int): Uri? {
+    private fun processAndSave(
+        jpeg: ByteArray,
+        rotationDegrees: Int,
+        lut: LutLook
+    ): Uri? {
         val decoded =
             BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
 
@@ -1495,7 +1520,7 @@ class MainActivity : AppCompatActivity() {
                 decoded
             }
 
-        val looked = fz55Look.applyToBitmap(upright)
+        val looked = lut.applyToBitmap(upright)
         if (looked != upright) upright.recycle()
 
         val values = ContentValues().apply {
@@ -1546,26 +1571,32 @@ class MainActivity : AppCompatActivity() {
         // unfiltered; saved photos still get the look.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         binding.previewView.setRenderEffect(
-            if (fz55LookEnabled) fz55Look.renderEffect else null
+            lutFor(currentLook)?.renderEffect
         )
     }
 
+    // Cycles FZ55 -> G7X -> Off -> FZ55.
     private fun toggleLook() {
-        fz55LookEnabled = !fz55LookEnabled
+        val all = Look.values()
+        currentLook = all[(currentLook.ordinal + 1) % all.size]
         updateLookButton()
         applyPreviewLook()
         Toast.makeText(
             this,
-            if (fz55LookEnabled) "FZ55 look on" else "FZ55 look off",
+            if (currentLook == Look.OFF) "Look off" else currentLook.label + " look",
             Toast.LENGTH_SHORT
         ).show()
     }
 
     private fun updateLookButton() {
-        binding.lookButton.text = "FZ55"
-        binding.lookButton.alpha = if (fz55LookEnabled) 1f else 0.5f
+        binding.lookButton.text = currentLook.label
+        binding.lookButton.alpha = if (currentLook == Look.OFF) 0.5f else 1f
         binding.lookButton.contentDescription =
-            if (fz55LookEnabled) "FZ55 look on" else "FZ55 look off"
+            if (currentLook == Look.OFF) {
+                "Camera look off"
+            } else {
+                currentLook.label + " look on"
+            }
     }
 
     private fun finishCapture() {

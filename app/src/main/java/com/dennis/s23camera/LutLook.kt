@@ -11,18 +11,19 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 
 /**
- * Applies the "FZ55 look" — a 3D LUT that reproduces the Kodak PIXPRO FZ55
- * rendering character (warm white balance, punchy contrast, lifted
- * greens/yellows).
+ * A camera "look": a 3D LUT (standard .cube file in assets/) applied to the
+ * live preview and to saved photos.
  *
- * The LUT lives in assets/fz55_look_v1.cube (a standard .cube file).
+ * Current looks:
+ *  - fz55_look_v1_1.cube      — Kodak PIXPRO FZ55 character
+ *  - canon_g7x3_look_v1.cube  — Canon PowerShot G7 X Mark III character
  *
  *  - Saved photos use [applyToBitmap] (trilinear interpolation — best quality).
  *  - The live preview uses [renderEffect] (an AGSL LUT shader, Android 13+).
  *
  * Both read the same .cube, so the preview and the saved file match.
  */
-class FZ55Look(context: Context) {
+class LutLook(context: Context, private val assetName: String) {
 
     // size of the cube (e.g. 33 -> 33x33x33)
     private var size: Int = 0
@@ -36,7 +37,7 @@ class FZ55Look(context: Context) {
         try {
             parseCube(context)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load FZ55 LUT", e)
+            Log.e(TAG, "Failed to load LUT $assetName", e)
             size = 0
             data = FloatArray(0)
         }
@@ -46,7 +47,7 @@ class FZ55Look(context: Context) {
         var n = 0
         val values = ArrayList<Float>(36000)
 
-        context.assets.open(ASSET_NAME).bufferedReader().useLines { lines ->
+        context.assets.open(assetName).bufferedReader().useLines { lines ->
             for (raw in lines) {
                 val line = raw.trim()
                 if (line.isEmpty() || line.startsWith("#")) continue
@@ -234,7 +235,6 @@ class FZ55Look(context: Context) {
     """.trimIndent()
 
     companion object {
-        private const val TAG = "FZ55Look"
-        private const val ASSET_NAME = "fz55_look_v1.cube"
+        private const val TAG = "LutLook"
     }
 }
