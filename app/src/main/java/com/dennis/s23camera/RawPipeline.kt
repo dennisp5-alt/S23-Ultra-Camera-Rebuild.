@@ -103,7 +103,10 @@ object RawPipeline {
         val exposureGain: Float? = null,  // null = automatic
         val evBias: Float = 0f,            // user EV compensation, in stops
         val filmic: Boolean = true,        // false = plain sRGB (for testing)
-        val saturation: Float = 1.05f
+        // Fitted to Samsung's own JPEG on a real S23 Ultra shot pair: the
+        // ISP's colour matrix is "accurate", Samsung adds ~2x on top; 1.6
+        // sits between, and the camera looks add their own on top.
+        val saturation: Float = 1.6f
     )
 
     // ---------------------------------------------------------------- utils
@@ -563,31 +566,43 @@ object RawPipeline {
         return if (i >= size) size - 1 else i
     }
 
-    /** linear (0..TONE_MAX) -> 8-bit sRGB, with an optional filmic curve. */
+    /**
+     * linear (0..TONE_MAX, after exposure) -> 8-bit sRGB.
+     *
+     * Camera curve: small black point, linear up to a knee, then an
+     * exponential shoulder that rolls highlights off instead of clipping,
+     * sRGB encode, then an S-curve for contrast. Parameters were fitted to
+     * Samsung's own JPEG of the same scene (v1 used extended Reinhard, which
+     * left whites at ~180 and blacks lifted to ~40).
+     */
     private fun toneTable(filmic: Boolean): IntArray {
         val n = 16384
         val t = IntArray(n)
-        val lw2 = TONE_MAX * TONE_MAX
         for (i in 0 until n) {
             val x = i * TONE_MAX / (n - 1)
-            var y =
-                if (filmic) {
-                    // extended Reinhard: soft highlight roll-off, x = TONE_MAX -> 1
-                    val r = x * (1f + x / lw2) / (1f + x)
-                    min(1f, r)
-                } else {
-                    min(1f, x)
-                }
-            var s = srgbEncode(y)
+            var s: Float
             if (filmic) {
+                val xb = max(0f, (x - BLACK_POINT) / (1f - BLACK_POINT))
+                val y =
+                    if (xb < KNEE) xb
+                    else KNEE + (1f - KNEE) * (1f - exp(-(xb - KNEE) / (1f - KNEE)))
+                s = srgbEncode(min(1f, y))
                 val smooth = s * s * (3f - 2f * s)
-                s += (smooth - s) * 0.18f   // gentle S-curve contrast
+                s += (smooth - s) * CONTRAST
+            } else {
+                s = srgbEncode(min(1f, x))
             }
-            y = s
-            t[i] = (y * 255f + 0.5f).toInt().coerceIn(0, 255)
+            t[i] = (s * 255f + 0.5f).toInt().coerceIn(0, 255)
         }
         return t
     }
+
+    private const val BLACK_POINT = 0.02f  // capped: deeper crushes Hi-Q's clean shadows
+    private const val KNEE = 0.55f
+    private const val CONTRAST = 0.30f
+    private const val EXPOSURE_TRIM = 1.30f
+    private const val HIGHLIGHT_TARGET = 0.9f  // brightest 1% kept below the shoulder's end
+    private const val MAX_PULLBACK = 0.65f     // a lamp in frame mustn't darken everything
 
     fun srgbEncode(v: Float): Float =
         if (v <= 0.0031308f) 12.92f * v else 1.055f * v.pow(1f / 2.4f) - 0.055f
@@ -595,7 +610,11 @@ object RawPipeline {
     fun srgbDecode(v: Float): Float =
         if (v <= 0.04045f) v / 12.92f else ((v + 0.055f) / 1.055f).pow(2.4f)
 
-    /** Scales the scene so its log-average luminance lands on a mid key. */
+    /**
+     * Scales the scene so its log-average luminance lands on a mid key, then
+     * pulls back (by at most MAX_PULLBACK) if that would push the brightest
+     * 1% of the frame past the highlight shoulder.
+     */
     private fun autoExposureGain(
         raw: FloatArray,
         w: Int,
@@ -605,6 +624,7 @@ object RawPipeline {
     ): Float {
         var sum = 0.0
         var n = 0
+        val samples = FloatArray(((h / 2 + 3) / 4) * ((w / 2 + 3) / 4))
         var qy = 0
         while (qy < h / 2) {
             var qx = 0
@@ -625,6 +645,7 @@ object RawPipeline {
                 val lb = m[6] * r + m[7] * g + m[8] * b
                 val yl = max(0f, 0.2126f * lr + 0.7152f * lg + 0.0722f * lb)
                 sum += ln(yl + 1e-4)
+                if (n < samples.size) samples[n] = yl
                 n++
                 qx += 4
             }
@@ -632,7 +653,14 @@ object RawPipeline {
         }
         if (n == 0) return 1f
         val logAvg = exp(sum / n).toFloat()
-        return (KEY / logAvg).coerceIn(0.8f, 2.5f)
+        val keyGain = (KEY / logAvg).coerceIn(0.8f, 2.5f) * EXPOSURE_TRIM
+
+        val count = min(n, samples.size)
+        val sorted = samples.copyOf(count)
+        sorted.sort()
+        val p99 = sorted[min(count - 1, (count * 0.99f).toInt())]
+        val protect = if (p99 > 1e-4f) HIGHLIGHT_TARGET / p99 else keyGain
+        return max(keyGain * MAX_PULLBACK, min(keyGain, protect))
     }
 
     private const val KEY = 0.21f
