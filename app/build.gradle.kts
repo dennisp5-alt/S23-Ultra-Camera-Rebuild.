@@ -11,8 +11,8 @@ android {
         applicationId = "com.dennis.s23camera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.8-rebuild"
+        versionCode = 11
+        versionName = "1.10-looks"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

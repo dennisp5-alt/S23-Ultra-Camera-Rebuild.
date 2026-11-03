@@ -46,6 +46,10 @@ import androidx.camera.extensions.ExtensionsManager
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.content.ContextCompat
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import androidx.camera.core.ImageProxy
 import com.dennis.s23camera.databinding.ActivityMainBinding
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -101,6 +105,24 @@ class MainActivity : AppCompatActivity() {
     private var countdownActive = false
     private var lastSavedUri: Uri? = null
 
+    // Camera looks (3D LUTs in assets/). The look button cycles through them.
+    // Off = the original CameraX capture path and an unfiltered preview.
+    private enum class Look(val label: String, val asset: String?) {
+        KODAK("FZ55", "fz55_look_v1_1.cube"),
+        CANON("G7X", "canon_g7x3_look_v1.cube"),
+        OFF("Off", null)
+    }
+
+    private var currentLook = Look.KODAK
+    private val lutCache = HashMap<Look, LutLook>()
+
+    // Loaded on first use and kept; returns null for Off or a failed load.
+    private fun lutFor(look: Look): LutLook? {
+        val asset = look.asset ?: return null
+        return lutCache.getOrPut(look) { LutLook(this, asset) }
+            .takeIf { it.isLoaded }
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val displayManager: DisplayManager? by lazy {
@@ -150,6 +172,7 @@ class MainActivity : AppCompatActivity() {
         restoreState(savedInstanceState)
         setupControls()
         updateModeButtons()
+        updateLookButton()
         updateUi()
         restoreLastPhoto()
 
@@ -188,6 +211,7 @@ class MainActivity : AppCompatActivity() {
         outState.putBoolean(STATE_GRID, gridEnabled)
         outState.putFloat(STATE_ZOOM, currentZoomRatio)
         outState.putInt(STATE_EV, currentExposureIndex)
+        outState.putString(STATE_LOOK, currentLook.name)
     }
 
     private fun restoreState(state: Bundle?) {
@@ -198,6 +222,10 @@ class MainActivity : AppCompatActivity() {
         flashMode = state.getInt(STATE_FLASH, flashMode)
         timerSeconds = state.getInt(STATE_TIMER, timerSeconds)
         gridEnabled = state.getBoolean(STATE_GRID, gridEnabled)
+        currentLook =
+            state.getString(STATE_LOOK)
+                ?.let { name -> Look.values().firstOrNull { it.name == name } }
+                ?: currentLook
 
         val zoom = state.getFloat(STATE_ZOOM, 1f)
         pendingZoomRatio = zoom
@@ -211,6 +239,7 @@ class MainActivity : AppCompatActivity() {
         binding.flashButton.setOnClickListener { toggleFlash() }
         binding.timerButton.setOnClickListener { toggleTimer() }
         binding.gridButton.setOnClickListener { toggleGrid() }
+        binding.lookButton.setOnClickListener { toggleLook() }
         binding.thumbnailImage.setOnClickListener { openLastPhoto() }
 
         binding.modePhotoButton.setOnClickListener { setMode("Photo") }
@@ -438,6 +467,7 @@ class MainActivity : AppCompatActivity() {
             observeCameraState()
             configureExposureControl()
             applyModeSpecificCameraControls()
+            applyPreviewLook()
             updateUi()
 
         } catch (e: Exception) {
@@ -479,7 +509,7 @@ class MainActivity : AppCompatActivity() {
             activeModeBackend =
                 when (currentMode) {
                     "Macro" -> "Macro • close focus"
-                    else -> "Photo"
+                    else -> "Auto"
                 }
             return baseSelector
         }
@@ -1283,6 +1313,16 @@ class MainActivity : AppCompatActivity() {
         binding.captureButton.alpha = 0.6f
         binding.statusText.text = "Capturing…"
 
+        val lut = lutFor(currentLook)
+        if (lut != null) {
+            capturePhotoWithLook(capture, lut, currentLook.label)
+        } else {
+            capturePhotoDirect(capture)
+        }
+    }
+
+    // Original path: CameraX writes the JPEG straight to MediaStore (untouched).
+    private fun capturePhotoDirect(capture: ImageCapture) {
         val timestamp =
             SimpleDateFormat(
                 "yyyyMMdd_HHmmss_SSS",
@@ -1356,14 +1396,207 @@ class MainActivity : AppCompatActivity() {
 
                     finishCapture()
 
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Capture failed.",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    toastCaptureFailed()
                 }
             }
         )
+    }
+
+    // Look path: capture in memory, apply the look's LUT, then save the JPEG.
+    private fun capturePhotoWithLook(
+        capture: ImageCapture,
+        lut: LutLook,
+        lookLabel: String
+    ) {
+        capture.takePicture(
+            ContextCompat.getMainExecutor(this),
+            object : ImageCapture.OnImageCapturedCallback() {
+
+                override fun onCaptureStarted() {
+                    if (!isDestroyed) playShutterAnimation()
+                }
+
+                override fun onCaptureProcessProgressed(progress: Int) {
+                    if (!isDestroyed) {
+                        binding.statusText.text =
+                            "Processing " + progress + "%"
+                    }
+                }
+
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    val rotation = image.imageInfo.rotationDegrees
+
+                    val jpeg =
+                        try {
+                            jpegBytesFrom(image)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Reading captured image failed", e)
+                            null
+                        } finally {
+                            image.close()
+                        }
+
+                    if (jpeg == null) {
+                        if (!isDestroyed) {
+                            finishCapture()
+                            toastCaptureFailed()
+                        }
+                        return
+                    }
+
+                    if (!isDestroyed) {
+                        binding.statusText.text = "Applying " + lookLabel + " look…"
+                    }
+
+                    try {
+                        cameraExecutor.execute {
+                            val uri =
+                                try {
+                                    processAndSave(jpeg, rotation, lut)
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Look processing failed", e)
+                                    null
+                                }
+
+                            runOnUiThread {
+                                if (isDestroyed) return@runOnUiThread
+                                finishCapture()
+                                if (uri != null) {
+                                    rememberLastPhoto(uri)
+                                    loadThumbnailAsync(uri)
+                                } else {
+                                    toastCaptureFailed()
+                                }
+                            }
+                        }
+                    } catch (e: RejectedExecutionException) {
+                        if (!isDestroyed) {
+                            finishCapture()
+                            toastCaptureFailed()
+                        }
+                    }
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    Log.e(TAG, "Photo capture failed", exception)
+                    if (isDestroyed) return
+                    finishCapture()
+                    toastCaptureFailed()
+                }
+            }
+        )
+    }
+
+    private fun toastCaptureFailed() {
+        Toast.makeText(this, "Capture failed.", Toast.LENGTH_LONG).show()
+    }
+
+    private fun jpegBytesFrom(image: ImageProxy): ByteArray {
+        val buffer = image.planes[0].buffer
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
+        return bytes
+    }
+
+    // Decode -> rotate upright -> apply LUT -> write JPEG (quality 100).
+    // Runs on cameraExecutor, never the main thread.
+    private fun processAndSave(
+        jpeg: ByteArray,
+        rotationDegrees: Int,
+        lut: LutLook
+    ): Uri? {
+        val decoded =
+            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
+
+        val upright =
+            if (rotationDegrees % 360 != 0) {
+                val m = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
+                val rotated = Bitmap.createBitmap(
+                    decoded, 0, 0, decoded.width, decoded.height, m, true
+                )
+                if (rotated != decoded) decoded.recycle()
+                rotated
+            } else {
+                decoded
+            }
+
+        val looked = lut.applyToBitmap(upright)
+        if (looked != upright) upright.recycle()
+
+        val values = ContentValues().apply {
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
+                .format(System.currentTimeMillis())
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "S23U_" + timestamp + ".jpg")
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/S23UltraCamera")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+
+        val uri = contentResolver.insert(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+        ) ?: run {
+            looked.recycle()
+            return null
+        }
+
+        try {
+            val stream = contentResolver.openOutputStream(uri)
+            if (stream == null) {
+                contentResolver.delete(uri, null, null)
+                looked.recycle()
+                return null
+            }
+            stream.use { out ->
+                looked.compress(Bitmap.CompressFormat.JPEG, 100, out)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Saving looked image failed", e)
+            contentResolver.delete(uri, null, null)
+            looked.recycle()
+            return null
+        }
+
+        looked.recycle()
+
+        val done = ContentValues().apply {
+            put(MediaStore.MediaColumns.IS_PENDING, 0)
+        }
+        contentResolver.update(uri, done, null, null)
+
+        return uri
+    }
+
+    private fun applyPreviewLook() {
+        // RuntimeShader (AGSL) is Android 13+. Below that, preview is
+        // unfiltered; saved photos still get the look.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        binding.previewView.setRenderEffect(
+            lutFor(currentLook)?.renderEffect
+        )
+    }
+
+    // Cycles FZ55 -> G7X -> Off -> FZ55.
+    private fun toggleLook() {
+        val all = Look.values()
+        currentLook = all[(currentLook.ordinal + 1) % all.size]
+        updateLookButton()
+        applyPreviewLook()
+        Toast.makeText(
+            this,
+            if (currentLook == Look.OFF) "Look off" else currentLook.label + " look",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun updateLookButton() {
+        binding.lookButton.text = currentLook.label
+        binding.lookButton.alpha = if (currentLook == Look.OFF) 0.5f else 1f
+        binding.lookButton.contentDescription =
+            if (currentLook == Look.OFF) {
+                "Camera look off"
+            } else {
+                currentLook.label + " look on"
+            }
     }
 
     private fun finishCapture() {
@@ -1580,6 +1813,7 @@ class MainActivity : AppCompatActivity() {
         private const val STATE_GRID = "grid_enabled"
         private const val STATE_ZOOM = "zoom_ratio"
         private const val STATE_EV = "exposure_index"
+        private const val STATE_LOOK = "fz55_look"
 
         private val COUNTDOWN_TOKEN = Any()
     }
