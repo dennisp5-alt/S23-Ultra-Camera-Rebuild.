@@ -15,6 +15,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
 /*
  * Hi-Q: capture a short burst of RAW frames, merge them (less noise, more
@@ -58,7 +59,8 @@ class RawStatics(
     val cfa: Int,
     val black: FloatArray,          // per 2x2 position
     val white: Float,
-    val forwardMatrix: FloatArray?  // camera -> XYZ D50
+    val forwardMatrix: FloatArray?, // camera -> XYZ D50
+    val maxRawWidth: Int            // full RAW width (to detect hardware zoom); 0 if unknown
 ) {
     companion object {
         fun read(cameraInfo: CameraInfo): RawStatics? =
@@ -83,7 +85,11 @@ class RawStatics(
                         info.getCameraCharacteristic(CameraCharacteristics.SENSOR_FORWARD_MATRIX2)
                             ?: info.getCameraCharacteristic(CameraCharacteristics.SENSOR_FORWARD_MATRIX1)
                         )?.let { toFloatArray(it) }
-                    RawStatics(cfa, black, white.toFloat(), fm)
+                    val maxRaw = info.getCameraCharacteristic(
+                        CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
+                    )?.getOutputSizes(ImageFormat.RAW_SENSOR)
+                        ?.maxByOrNull { it.width }?.width ?: 0
+                    RawStatics(cfa, black, white.toFloat(), fm, maxRaw)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Reading RAW characteristics failed", e)
@@ -126,7 +132,8 @@ fun copyRawFrame(image: ImageProxy): RawFrame? {
 class HiQProcessor(
     private val statics: RawStatics,
     private val store: CaptureResultStore,
-    private val evBias: Float
+    private val evBias: Float,
+    private val zoom: Float = 1f
 ) {
     class Result(val pixels: IntArray, val width: Int, val height: Int, val rotation: Int)
 
@@ -136,6 +143,12 @@ class HiQProcessor(
     private var params: RawPipeline.Params? = null
     private var merger: RawPipeline.BurstMerger? = null
     private var rotation = 0
+
+    // Digital-zoom crop (even) applied to every frame, and the output size.
+    private var cropW = 0
+    private var cropH = 0
+    private var outW = 0
+    private var outH = 0
 
     @Volatile
     private var failure: Throwable? = null
@@ -152,15 +165,31 @@ class HiQProcessor(
         try {
             val m = merger
             if (m == null) {
-                val p = buildParams(frame)
+                // Output stays the full RAW frame size, whatever the zoom.
+                outW = frame.width
+                outH = frame.height
+
+                // Some sensors crop RAW for hardware zoom; most deliver full
+                // frames. Software-crop only the zoom the hardware didn't.
+                val hwZoom =
+                    if (statics.maxRawWidth > 0 && frame.width > 0)
+                        (statics.maxRawWidth.toFloat() / frame.width).coerceAtLeast(1f)
+                    else 1f
+                val swZoom = (zoom / hwZoom).coerceAtLeast(1f)
+                cropW = RawPipeline.evenClamp((frame.width / swZoom).roundToInt(), frame.width)
+                cropH = RawPipeline.evenClamp((frame.height / swZoom).roundToInt(), frame.height)
+
+                val refData = cropFor(frame)
+                val p = buildParams(frame, cropW, cropH, refData)
                 params = p
                 rotation = frame.rotation
-                merger = RawPipeline.BurstMerger(p, pool).also { it.addReference(frame.data) }
+                merger = RawPipeline.BurstMerger(p, pool).also { it.addReference(refData) }
             } else {
                 val p = params ?: return
-                if (frame.width != p.width || frame.height != p.height) return
                 if (m.frames >= RawPipeline.MAX_FRAMES) return
-                m.addFrame(frame.data)
+                val data = cropFor(frame)
+                if (data.size != p.width * p.height) return
+                m.addFrame(data)
             }
             frames++
         } catch (t: Throwable) {
@@ -168,6 +197,11 @@ class HiQProcessor(
             failure = t
         }
     }
+
+    private fun cropFor(frame: RawFrame): ShortArray =
+        if (cropW < frame.width || cropH < frame.height)
+            RawPipeline.cropBayerCentered(frame.data, frame.width, frame.height, cropW, cropH)
+        else frame.data
 
     fun finish(lut: LutLook?): Result {
         failure?.let { throw it }
@@ -178,20 +212,30 @@ class HiQProcessor(
         merger = null
         val px = RawPipeline.develop(merged, p, pool, RawPipeline.Tone(evBias = evBias))
         RawPipeline.suppressFalseColour(px, p.width, p.height, pool)
-        val out = RawPipeline.sharpen(px, p.width, p.height, SHARPEN_AMOUNT, pool)
+        var out = RawPipeline.sharpen(px, p.width, p.height, SHARPEN_AMOUNT, pool)
         if (lut != null && lut.isLoaded) {
             RawPipeline.parallelFor(pool, p.height) { y0, y1 ->
                 lut.applyToPixels(out, y0 * p.width, y1 * p.width)
             }
         }
-        return Result(out, p.width, p.height, rotation)
+        // Digital zoom: a cropped merge is upscaled back to the full size, so a
+        // zoomed Hi-Q shot is the same pixel size as a 1x one.
+        if (p.width != outW || p.height != outH) {
+            out = RawPipeline.upscale(out, p.width, p.height, outW, outH, pool)
+        }
+        return Result(out, outW, outH, rotation)
     }
 
     fun close() {
         pool.shutdown()
     }
 
-    private fun buildParams(frame: RawFrame): RawPipeline.Params {
+    private fun buildParams(
+        frame: RawFrame,
+        w: Int,
+        h: Int,
+        data: ShortArray
+    ): RawPipeline.Params {
         val own = store.find(frame.timestamp)
         val result = own ?: store.latest
         metadataSource = when {
@@ -200,6 +244,7 @@ class HiQProcessor(
             else -> "none"
         }
 
+        val cropped = w < frame.width || h < frame.height
         val cfa = statics.cfa
         val channel = RawPipeline.channelAt(cfa)
 
@@ -211,7 +256,7 @@ class HiQProcessor(
         val gains = result?.get(CaptureResult.COLOR_CORRECTION_GAINS)
         val wb =
             if (gains != null) FloatArray(4) { p -> gains.getComponent(channel[p]) }
-            else RawPipeline.grayWorldGains(frame.data, frame.width, frame.height, cfa, black, white)
+            else RawPipeline.grayWorldGains(data, w, h, cfa, black, white)
 
         val ccm = result?.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
             ?.let { toFloatArray(it) }
@@ -221,7 +266,11 @@ class HiQProcessor(
                 ?.takeIf { RawPipeline.isPlausibleCcm(it) }
             ?: floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
 
-        val shading = result?.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
+        // The shading map covers the full frame; on a centre crop (zoom) it
+        // would over-correct the crop's edges, and the centre barely vignettes,
+        // so it is only used at 1x.
+        val shading = if (cropped) null else
+            result?.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
             ?.let { map ->
                 val cols = map.columnCount
                 val rows = map.rowCount
@@ -250,11 +299,11 @@ class HiQProcessor(
 
         Log.i(
             TAG,
-            "Hi-Q params ${frame.width}x${frame.height} cfa=$cfa meta=$metadataSource " +
-                "wb=${wb.joinToString()} shading=${shading != null} noise=${noiseS != null}"
+            "Hi-Q params ${w}x$h (frame ${frame.width}x${frame.height}, zoom $zoom) cfa=$cfa " +
+                "meta=$metadataSource shading=${shading != null} noise=${noiseS != null}"
         )
         return RawPipeline.Params(
-            frame.width, frame.height, cfa, black, white, wb, ccm, shading, noiseS, noiseO
+            w, h, cfa, black, white, wb, ccm, shading, noiseS, noiseO
         )
     }
 

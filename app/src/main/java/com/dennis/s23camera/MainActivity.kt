@@ -612,13 +612,10 @@ class MainActivity : AppCompatActivity() {
                 return@observe
             }
 
-            // Hi-Q is 1x only: RAW frames ignore digital zoom.
-            if (
-                hiQEnabled &&
-                abs(currentZoomRatio - 1f) > 0.01f &&
-                minZoomRatio <= 1f && maxZoomRatio >= 1f
-            ) {
-                camera?.cameraControl?.setZoomRatio(1f)
+            // Hi-Q zooms by cropping the RAW, so cap it at HIQ_MAX_ZOOM and
+            // keep it on the main sensor (no lens switch).
+            if (hiQEnabled && currentZoomRatio > effMaxZoom() + 0.01f) {
+                camera?.cameraControl?.setZoomRatio(effMaxZoom())
                 return@observe
             }
 
@@ -687,14 +684,18 @@ class MainActivity : AppCompatActivity() {
     private fun isZoomAdjustable(): Boolean =
         camera != null &&
             currentMode != "Macro" &&
-            !hiQEnabled &&
-            maxZoomRatio > minZoomRatio + 0.01f
+            effMaxZoom() > minZoomRatio + 0.01f
+
+    // In Hi-Q the digital zoom is a RAW crop, capped so it stays usable.
+    private fun effMaxZoom(): Float =
+        if (hiQEnabled) minOf(HIQ_MAX_ZOOM, maxZoomRatio) else maxZoomRatio
 
     private fun setZoomRatioSafely(target: Float) {
-        if (maxZoomRatio <= minZoomRatio) return
+        val top = effMaxZoom()
+        if (top <= minZoomRatio) return
 
         camera?.cameraControl?.setZoomRatio(
-            target.coerceIn(minZoomRatio, maxZoomRatio)
+            target.coerceIn(minZoomRatio, top)
         )
     }
 
@@ -783,7 +784,8 @@ class MainActivity : AppCompatActivity() {
     // Logarithmic mapping: equal slider travel = equal zoom *factor*, so the
     // 0.6x–3x range gets as much of the slider as 3x–10x (or 10x–100x).
     private fun sliderProgressToZoom(progress: Int): Float {
-        if (maxZoomRatio <= minZoomRatio || minZoomRatio <= 0f) {
+        val top = effMaxZoom()
+        if (top <= minZoomRatio || minZoomRatio <= 0f) {
             return minZoomRatio
         }
 
@@ -791,18 +793,19 @@ class MainActivity : AppCompatActivity() {
             progress.coerceIn(0, ZOOM_SLIDER_STEPS) /
                 ZOOM_SLIDER_STEPS.toFloat()
 
-        return (minZoomRatio * (maxZoomRatio / minZoomRatio).pow(fraction))
-            .coerceIn(minZoomRatio, maxZoomRatio)
+        return (minZoomRatio * (top / minZoomRatio).pow(fraction))
+            .coerceIn(minZoomRatio, top)
     }
 
     private fun zoomToSliderProgress(zoom: Float): Int {
-        if (maxZoomRatio <= minZoomRatio || minZoomRatio <= 0f) {
+        val top = effMaxZoom()
+        if (top <= minZoomRatio || minZoomRatio <= 0f) {
             return 0
         }
 
         val fraction =
-            ln(zoom.coerceIn(minZoomRatio, maxZoomRatio) / minZoomRatio) /
-                ln(maxZoomRatio / minZoomRatio)
+            ln(zoom.coerceIn(minZoomRatio, top) / minZoomRatio) /
+                ln(top / minZoomRatio)
 
         return (fraction * ZOOM_SLIDER_STEPS)
             .roundToInt()
@@ -1711,7 +1714,8 @@ class MainActivity : AppCompatActivity() {
 
         Toast.makeText(
             this,
-            "Hi-Q on: merges " + HIQ_FRAMES + " RAW frames. Hold still. 1× only.",
+            "Hi-Q on: merges " + HIQ_FRAMES + " RAW frames. Hold still. Zoom to " +
+                HIQ_MAX_ZOOM.toInt() + "×.",
             Toast.LENGTH_LONG
         ).show()
     }
@@ -1742,7 +1746,8 @@ class MainActivity : AppCompatActivity() {
         val processor = HiQProcessor(
             statics,
             captureResults,
-            currentExposureIndex * exposureStep
+            currentExposureIndex * exposureStep,
+            currentZoomRatio.coerceIn(1f, HIQ_MAX_ZOOM)
         )
         captureHiQFrame(capture, processor, 0, lut)
     }
@@ -2131,6 +2136,10 @@ class MainActivity : AppCompatActivity() {
 
         // Frames per Hi-Q burst: 4 roughly halves the noise.
         private const val HIQ_FRAMES = 4
+
+        // Max Hi-Q digital zoom (RAW crop + multi-frame upscale). Beyond this a
+        // main-sensor crop gets too soft even with merging.
+        private const val HIQ_MAX_ZOOM = 4f
 
         private val COUNTDOWN_TOKEN = Any()
     }

@@ -11,8 +11,8 @@ android {
         applicationId = "com.dennis.s23camera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.12-hiq"
+        versionCode = 14
+        versionName = "1.13-hiqzoom"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

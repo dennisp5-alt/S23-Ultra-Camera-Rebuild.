@@ -867,6 +867,125 @@ object RawPipeline {
         return dst
     }
 
+    // ------------------------------------------------------------ zoom
+
+    /**
+     * Centre-crops a Bayer frame to [cropW]x[cropH] for digital zoom. The crop
+     * origin is forced even so the 2x2 CFA phase is preserved and [cfa] stays
+     * valid. [cropW]/[cropH] are rounded down to even. Returns the cropped
+     * ShortArray; its dimensions are the (evened) cropW/cropH.
+     */
+    fun cropBayerCentered(
+        src: ShortArray,
+        w: Int,
+        h: Int,
+        cropW: Int,
+        cropH: Int
+    ): ShortArray {
+        val cw = (cropW and 1.inv()).coerceIn(2, w)
+        val ch = (cropH and 1.inv()).coerceIn(2, h)
+        val ox = ((w - cw) / 2) and 1.inv()
+        val oy = ((h - ch) / 2) and 1.inv()
+        val out = ShortArray(cw * ch)
+        var dy = 0
+        while (dy < ch) {
+            System.arraycopy(src, (oy + dy) * w + ox, out, dy * cw, cw)
+            dy++
+        }
+        return out
+    }
+
+    /** Even value nearest to v, at least 2 and at most max. */
+    fun evenClamp(v: Int, max: Int): Int = (v and 1.inv()).coerceIn(2, max and 1.inv())
+
+    /**
+     * Upscales ARGB pixels to [outW]x[outH] with a separable Catmull-Rom
+     * bicubic filter. Used after merge+develop so a cropped (zoomed) frame
+     * comes out at the same size as a 1x Hi-Q shot. Alpha is forced opaque.
+     */
+    fun upscale(
+        src: IntArray,
+        w: Int,
+        h: Int,
+        outW: Int,
+        outH: Int,
+        pool: ExecutorService?
+    ): IntArray {
+        if (outW == w && outH == h) return src
+
+        // Horizontal pass: w x h -> outW x h (per channel, float).
+        val tmpR = FloatArray(outW * h)
+        val tmpG = FloatArray(outW * h)
+        val tmpB = FloatArray(outW * h)
+        val sx = w.toFloat() / outW
+        parallelFor(pool, h) { y0, y1 ->
+            for (y in y0 until y1) {
+                val row = y * w
+                val orow = y * outW
+                for (ox in 0 until outW) {
+                    val fx = (ox + 0.5f) * sx - 0.5f
+                    val ix = floorToInt(fx)
+                    val t = fx - ix
+                    val w0 = cubic(t + 1f); val w1 = cubic(t)
+                    val w2 = cubic(1f - t); val w3 = cubic(2f - t)
+                    var r = 0f; var g = 0f; var b = 0f
+                    var k = -1
+                    while (k <= 2) {
+                        val c = src[row + (ix + k).coerceIn(0, w - 1)]
+                        val wt = when (k) { -1 -> w0; 0 -> w1; 1 -> w2; else -> w3 }
+                        r += wt * ((c ushr 16) and 0xFF)
+                        g += wt * ((c ushr 8) and 0xFF)
+                        b += wt * (c and 0xFF)
+                        k++
+                    }
+                    tmpR[orow + ox] = r; tmpG[orow + ox] = g; tmpB[orow + ox] = b
+                }
+            }
+        }
+
+        // Vertical pass: outW x h -> outW x outH.
+        val out = IntArray(outW * outH)
+        val sy = h.toFloat() / outH
+        parallelFor(pool, outH) { y0, y1 ->
+            for (oy in y0 until y1) {
+                val fy = (oy + 0.5f) * sy - 0.5f
+                val iy = floorToInt(fy)
+                val t = fy - iy
+                val w0 = cubic(t + 1f); val w1 = cubic(t)
+                val w2 = cubic(1f - t); val w3 = cubic(2f - t)
+                val orow = oy * outW
+                for (ox in 0 until outW) {
+                    var r = 0f; var g = 0f; var b = 0f
+                    var k = -1
+                    while (k <= 2) {
+                        val yy = (iy + k).coerceIn(0, h - 1) * outW + ox
+                        val wt = when (k) { -1 -> w0; 0 -> w1; 1 -> w2; else -> w3 }
+                        r += wt * tmpR[yy]; g += wt * tmpG[yy]; b += wt * tmpB[yy]
+                        k++
+                    }
+                    out[orow + ox] = -0x1000000 or
+                        (r.toInt().coerceIn(0, 255) shl 16) or
+                        (g.toInt().coerceIn(0, 255) shl 8) or
+                        b.toInt().coerceIn(0, 255)
+                }
+            }
+        }
+        return out
+    }
+
+    private fun floorToInt(v: Float): Int = if (v >= 0f) v.toInt() else v.toInt() - 1
+
+    // Catmull-Rom cubic kernel (a = -0.5).
+    private fun cubic(x: Float): Float {
+        val a = -0.5f
+        val ax = abs(x)
+        return when {
+            ax < 1f -> ((a + 2f) * ax - (a + 3f)) * ax * ax + 1f
+            ax < 2f -> (((ax - 5f) * ax + 8f) * ax - 4f) * a
+            else -> 0f
+        }
+    }
+
     // ------------------------------------------------------------ fallbacks
 
     /** Grey-world white balance per 2x2 position (when the ISP gives none). */
